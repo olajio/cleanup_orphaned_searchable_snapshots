@@ -42,9 +42,8 @@ repository permanently:
   quota enforcement.
 
 Over time, across a fleet of indices cycling through the frozen tier, orphaned snapshots
-compound. In our environment they have accumulated to **~65 TiB logical** (with
-**~9.3 TiB genuinely reclaimable** after accounting for deduplication) — all of it paying
-full object-store billing rates with zero query value in return.
+compound into terabytes of dead data — all paying full object-store billing rates with zero
+query value in return.
 
 ### Additional Operational Impacts
 
@@ -83,14 +82,14 @@ independently and those snapshots are excluded from the orphan definition.
 ## What Was Built
 
 A Python tool and supporting documentation were developed to make this problem measurable and
-safe to fix. All assets live in: **`olajio/cleanup_orphaned_searchable_snapshots`**
+safe to fix.
 
 ### Tool: `orphaned_searchable_snapshots.py`
 
 | Capability | Flag | Notes |
 |------------|------|-------|
 | Orphan detection | (default) | 3-way exclusion: not mounted, not SLM-managed, in repo |
-| Credentials from AWS Secrets Manager | `--cluster {dev,qa,ccs,prod}` | Loads `es_url` + `es_api_key` from `elastic/kibana/dataview_cleanup_<cluster>` |
+| Credentials from AWS Secrets Manager | `--cluster` | Loads `es_url` + `es_api_key` from a named secret per cluster |
 | Fast logical sizing | `--report-size` | Uses `index_details` metadata; no timeout risk |
 | Dedup-aware reclaimable sizing | `--incremental` | Uses `_status` API; URL-length batched to avoid HTTP 400 |
 | Per-snapshot breakdown (top 25) | `--per-snapshot` | Implies `--report-size` |
@@ -111,70 +110,74 @@ safe to fix. All assets live in: **`olajio/cleanup_orphaned_searchable_snapshots
 | `README.md` | Concepts, glossary, quick-start, all-options reference |
 | `HOWTO_orphaned_searchable_snapshots.md` | Detailed usage guide, recipes, troubleshooting |
 | `analyze_ilm.py` | Offline auditor for exported ILM policy JSON files |
-| `corrected_ilm_policies/` | Ready-to-apply corrected `PUT _ilm/policy` bodies |
+| `corrected_ilm_policies/` | Ready-to-apply corrected `PUT _ilm/policy` bodies per cluster |
 | `searchable_snapshot_ilm_findings.md` | Full audit write-up |
-| `{dev,qa,prod,ccs}_ilm_policy` | Exported ILM policy snapshots per cluster (input to `analyze_ilm.py`) |
 
 ---
 
-## Audit Findings — Current State (July 2026)
+## Audit Findings — Current State
+
+Run the tool against each cluster to populate this table before beginning any remediation:
 
 | Cluster | Orphans | Logical size | Reclaimable (dedup-aware) | Currently-leaking ILM policies | Policies needing review |
 |---------|--------:|-------------:|-------------:|-------------------------------|------------------------:|
-| **PROD** | 1,291 | 51.44 TiB | ~220 GiB | `cost` (0 orphans yet — latent) | 2 |
-| **QA** | 527 | 10.34 TiB | ~8.47 TiB | none currently flagged | 6 |
-| **DEV** | 231 | 3.30 TiB | ~639 GiB | `solarwinds-test` (0 orphans yet — latent) | 14 |
-| **CCS** | 0 | — | — | none | 0 |
-| **TOTAL** | **2,049** | **~65 TiB** | **~9.3 TiB** | | |
+| Cluster 1 | TBD | TBD | TBD | TBD | TBD |
+| Cluster 2 | TBD | TBD | TBD | TBD | TBD |
+| Cluster N | TBD | TBD | TBD | TBD | TBD |
+| **TOTAL** | | | | | |
 
-**~91% of reclaimable storage is concentrated in QA.**
+> **Note on logical vs. reclaimable size:** Snapshots are deduplicated — the logical size
+> over-counts blobs shared with live snapshots. The reclaimable (`--incremental`) figure is
+> the dedup-aware estimate of space actually freed. The exact bytes reclaimed are only
+> confirmed by comparing the object-store bucket size in the Elastic Cloud console before and
+> after deletion.
 
-### Critical Finding
+### Key Things to Investigate per Cluster
 
-`apm-rollover-30-days` is the dominant offender — it produced 405 orphans (8.38 TiB logical)
-on QA and 127 orphans (2.00 TiB logical) on DEV. Orphan creation dates extend to
-**2026-02-04**, after the policy's last update on both clusters, indicating the root cause is
-either still active in the policy or the index is being removed outside ILM's delete phase.
-Elastic support engagement is required to confirm.
+When reviewing the `--check-ilm` and `--ilm-review-file` output, flag any policy where:
 
-> **Note on PROD's 51 TiB logical vs. ~220 GiB reclaimable:** PROD has an extremely high
-> dedup ratio (~239×) — most blobs in the orphaned snapshots are still pinned by live
-> snapshots. The true bytes freed would only be confirmed by comparing the object-store bucket
-> size before and after deletion.
+- Orphan creation dates fall **after** the policy's last-updated date — the policy may still
+  be leaking even after a previous remediation attempt (shown as `NEEDS REVIEW`).
+- A policy creates searchable snapshots but has **no delete phase** — it will keep producing
+  orphans until fixed.
+- A policy has a delete phase with **`delete_searchable_snapshot: false`** — the snapshot is
+  intentionally left behind; confirm this is deliberate.
 
 ---
 
 ## Acceptance Criteria / Story Breakdown
 
-### Phase 1 — Root-cause triage (before any deletion)
+### Phase 1 — Audit each cluster (read-only)
 
-- [ ] Engage Elastic support to determine why `apm-rollover-30-days` frozen snapshots are
-      orphaning on QA and DEV after the policy was last updated. Confirm whether the policy
-      is the source or whether an external process is removing indices before ILM's delete
-      phase runs.
+- [ ] Run the tool against each cluster with `--report-size --incremental --check-ilm
+      --ilm-review-file <cluster>_ilm_review.txt --audit-file <cluster>_orphans_audit.txt`.
+- [ ] Populate the Audit Findings table above.
+- [ ] Identify any ILM policies still actively producing orphans and engage Elastic support
+      if the root cause is unclear (e.g. orphan dates post-date the last policy update).
 
 ### Phase 2 — Fix leaking ILM policies
 
-- [ ] **DEV:** Apply corrected `solarwinds-test` policy
-      (`corrected_ilm_policies/dev/solarwinds-test.json`). Review the `min_age: 365d`
-      placeholder against actual retention requirements before applying.
-- [ ] **PROD:** Apply corrected `cost` policy (`corrected_ilm_policies/prod/cost.json`).
-      Same `min_age` review applies. Schedule for a maintenance window.
-- [ ] **QA / DEV:** Apply resolution for `apm-rollover-30-days` per Phase 1 outcome.
-- [ ] Monitor each cluster for 30 days post-fix to confirm no new orphans are generated.
+- [ ] For each currently-offending policy, review the auto-generated corrected body in
+      `corrected_ilm_policies/<cluster>/<policy>.json`. Pay particular attention to the
+      `min_age` placeholder (`365d`) added to any newly-created delete phase — adjust to
+      match actual retention requirements before applying.
+- [ ] Apply the corrected policy via `PUT _ilm/policy/<name>` using the generated JSON body.
+- [ ] Monitor each cluster for 30 days post-fix to confirm no new orphans are generated by
+      the corrected policies.
 
 ### Phase 3 — Orphan deletion (dry-run before `--apply`)
 
-- [ ] **QA** — highest priority (~8.47 TiB reclaimable). Run dry-run, review output, then
-      apply during a low-traffic window.
-- [ ] **DEV** — (~639 GiB reclaimable). Tool already validated here; proceed to `--apply`.
-- [ ] **PROD** — schedule for a maintenance window (~220 GiB reclaimable). Note the high
-      dedup ratio; actual billing reduction confirmed from Cloud console bucket size.
-- [ ] **CCS** — no action required.
+- [ ] For each cluster, run the tool **without** `--apply` first and review the full dry-run
+      output. Prioritise clusters with the highest reclaimable storage.
+- [ ] Schedule production-tier clusters during a maintenance window.
+- [ ] Run with `--apply` to delete the confirmed orphan set.
+- [ ] To realise the full reclaim, delete the **entire** orphan set rather than a filtered
+      subset — shared base snapshots kept by a partial delete will prevent reclaim of most
+      blobs.
 
 ### Phase 4 — Verification & handoff
 
-- [ ] Confirm object-storage bucket size in Elastic Cloud console decreased by expected
+- [ ] Confirm object-storage bucket size in Elastic Cloud console decreased by the expected
       amount after each cluster's cleanup (bucket size before vs. after is the definitive
       measure).
 - [ ] Re-run the tool in read-only mode 30 days after deletion to confirm no new orphan
@@ -198,6 +201,4 @@ Elastic support engagement is required to confirm.
 - Elastic Cloud billing — storage dimensions:
   https://www.elastic.co/docs/deploy-manage/cloud-organization/billing/cloud-hosted-deployment-billing-dimensions#storage
 - Tool repository: `olajio/cleanup_orphaned_searchable_snapshots`
-- Audit write-up: `searchable_snapshot_ilm_findings.md` (in repo)
-- Full per-cluster orphan lists: `{dev,qa,prod,ccs}_orphans_audit.txt` (in repo)
-- Full ILM policy review: `{dev,qa,prod,ccs}_ilm_review.txt` (in repo)
+- Tool documentation: `README.md` and `HOWTO_orphaned_searchable_snapshots.md` (in repo)
