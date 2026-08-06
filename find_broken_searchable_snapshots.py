@@ -50,10 +50,44 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_spec = importlib.util.spec_from_file_location(
-    "_oss", os.path.join(HERE, "orphaned_searchable_snapshots.py"))
-_oss = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_oss)
+_SIBLING = os.path.join(HERE, "orphaned_searchable_snapshots.py")
+
+# This tool reuses the in-use detection from orphaned_searchable_snapshots.py, so the
+# two files must come from the same checkout. Loading a stale sibling used to fail deep
+# inside the run with a bare AttributeError; check up front and say exactly what to do.
+_REQUIRED = ("_refs_from_settings", "_refs_from_cluster_state", "list_all_snapshots",
+             "ESClient", "resolve_credentials")
+_MIN_VERSION = "2.0"
+
+
+def _load_sibling():
+    if not os.path.exists(_SIBLING):
+        sys.exit(f"ERROR: {_SIBLING} not found.\n"
+                 "This tool must sit in the same directory as orphaned_searchable_snapshots.py.")
+    spec = importlib.util.spec_from_file_location("_oss", _SIBLING)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        sys.exit(f"ERROR: could not load {_SIBLING}: {e}")
+
+    missing = [a for a in _REQUIRED if not hasattr(mod, a)]
+    version = getattr(mod, "TOOL_VERSION", None)
+    if missing or version is None:
+        sys.exit(
+            "ERROR: orphaned_searchable_snapshots.py is out of date.\n"
+            f"  loaded : {_SIBLING}\n"
+            f"  version: {version or 'pre-2.0 (no TOOL_VERSION)'} -- need {_MIN_VERSION} or newer\n"
+            + (f"  missing: {', '.join(missing)}\n" if missing else "")
+            + "\nThis tool needs the hidden-index fix from the same release. Update the whole\n"
+              "checkout so both files match -- e.g.:\n"
+              "    git pull\n"
+              "and make sure no older copy of orphaned_searchable_snapshots.py is shadowing it\n"
+              "in this directory.")
+    return mod
+
+
+_oss = _load_sibling()
 
 
 def mounted_refs(es, repo):

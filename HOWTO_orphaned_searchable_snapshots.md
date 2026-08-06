@@ -556,6 +556,7 @@ python3 test_integration_dryrun.py  # runs the real main() against a simulated c
 | `ERROR: failed to read AWS secret '...'` | AWS creds/permissions or region — check `secretsmanager:GetSecretValue` and `--region`. |
 | `HTTP 401` / `403` | API key invalid or lacks privileges — `monitor` + `view_index_metadata` (and `manage` for `--apply`). |
 | `HTTP 404` on `_snapshot/...` | Wrong repository name — set `--repo`. |
+| `AttributeError: module '_oss' has no attribute ...` (older builds) / `ERROR: orphaned_searchable_snapshots.py is out of date` | `find_broken_searchable_snapshots.py` reuses the in-use detection from `orphaned_searchable_snapshots.py` **in the same directory**, and that copy is stale. Run `git pull` so both files come from one checkout, and remove any older copy of `orphaned_searchable_snapshots.py` sitting in the working directory. |
 | Runs slowly / affects the cluster | Lower `--batch`, scope with `--pattern`, or run off-peak. |
 | `WARNING: ... visible ONLY in the cluster state` | The Get Settings query is under-resolving (hidden/closed indices). They were counted as in-use, but **do not `--apply`** until you understand why. |
 | `WARNING: could not read the cluster state to cross-check` | API key lacks the `monitor` cluster privilege. The cross-check is skipped — grant `monitor` before deleting. |

@@ -361,6 +361,40 @@ now_ms = int(_dt.datetime.now(_dt.timezone.utc).timestamp() * 1000)
 check("a snapshot taken right now is 0 days old (never negative)",
       oss.snapshot_age_days({"name": "x", "start_ms": now_ms}) == 0)
 
+
+print()
+print("=== 15. Stale-sibling guard in find_broken_searchable_snapshots.py ===")
+import subprocess
+import tempfile
+
+_tool = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "find_broken_searchable_snapshots.py")
+if os.path.exists(_tool):
+    d = tempfile.mkdtemp()
+    # A sibling that predates the hidden-index fix (no _refs_from_settings).
+    with open(os.path.join(d, "orphaned_searchable_snapshots.py"), "w") as fh:
+        fh.write("def collect_in_use(es, repo):\n    return set(), {}\n")
+    import shutil
+    shutil.copy(_tool, d)
+    r = subprocess.run([sys.executable, os.path.join(d, "find_broken_searchable_snapshots.py"),
+                        "--cluster", "dev"], capture_output=True, text=True)
+    msg = r.stdout + r.stderr
+    check("stale sibling exits non-zero", r.returncode != 0, f"rc={r.returncode}")
+    check("no bare AttributeError", "AttributeError" not in msg)
+    check("names the out-of-date file", "out of date" in msg)
+    check("lists the missing attributes", "_refs_from_settings" in msg)
+    check("tells the operator what to do", "git pull" in msg)
+
+    # A sibling that is missing entirely.
+    d2 = tempfile.mkdtemp()
+    shutil.copy(_tool, d2)
+    r = subprocess.run([sys.executable, os.path.join(d2, "find_broken_searchable_snapshots.py"),
+                        "--cluster", "dev"], capture_output=True, text=True)
+    check("missing sibling reported clearly",
+          r.returncode != 0 and "not found" in (r.stdout + r.stderr))
+else:
+    print("SKIP  find_broken_searchable_snapshots.py not present")
+
 print()
 print("=" * 60)
 if fails:
