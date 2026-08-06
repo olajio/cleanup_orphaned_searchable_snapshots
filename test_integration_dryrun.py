@@ -102,7 +102,7 @@ class FakeClient:
             return {}
         raise AssertionError("unexpected GET " + path)
 
-    def get_optional(self, path):
+    def get_optional(self, path, timeout=None):
         if "_cluster/state" in path:
             return {"metadata": {"indices": {
                 i: {"settings": {"index": {"store": {"snapshot": {
@@ -119,7 +119,7 @@ class FakeClient:
             return {"status": "green", "unassigned_shards": 0}
         return {}
 
-    def delete(self, path):
+    def delete(self, path, timeout=None):
         names = path.split(f"/_snapshot/{REPO}/")[1]
         self.deleted.extend(names.split(","))
         return {"acknowledged": True}
@@ -182,7 +182,7 @@ print("=== D. --apply blocked while a snapshot is running ===")
 
 
 class BusyClient(FakeClient):
-    def get_optional(self, path):
+    def get_optional(self, path, timeout=None):
         if "_current" in path:
             return {"snapshots": [{"snapshot": "running"}]}
         return FakeClient.get_optional(self, path)
@@ -198,7 +198,7 @@ print("=== E. Routine ILM frozen mount (shard recovering) does NOT block ===")
 
 
 class RecoveringClient(FakeClient):
-    def get_optional(self, path):
+    def get_optional(self, path, timeout=None):
         if "_recovery" in path:
             return {"idx": {"shards": [{"type": "SNAPSHOT"}]}}
         return FakeClient.get_optional(self, path)
@@ -216,6 +216,35 @@ code, out, err = run_main(["--apply", "--min-snapshot-age-days", "0"], c)
 live_deleted = [s for s in LIVE.values() if s in c.deleted]
 check("live snapshots still protected by the in-use scan", not live_deleted, str(live_deleted))
 check("young snapshot now deletable (guard disabled, as documented)", YOUNG_SNAP in c.deleted)
+
+print()
+print("=== G. Guards FAIL CLOSED when their own request fails ===")
+
+
+class FlakyClient(FakeClient):
+    """The advisory endpoints time out -> get_optional returns None (unknown)."""
+
+    def __init__(self, break_paths):
+        FakeClient.__init__(self)
+        self.break_paths = break_paths
+
+    def get_optional(self, path, timeout=None):
+        if any(p in path for p in self.break_paths):
+            return None          # what the real client returns after exhausting retries
+        return FakeClient.get_optional(self, path, timeout)
+
+
+for label, paths in [("_ilm/explain unavailable", ["_ilm/explain"]),
+                     ("_snapshot/_current unavailable", ["_current"]),
+                     ("cluster state unavailable", ["_cluster/state"])]:
+    c = FlakyClient(paths)
+    code, out, err = run_main(["--apply"], c)
+    check(f"{label}: --apply refuses", code != 0, f"exit={code}")
+    check(f"{label}: nothing deleted", c.deleted == [], str(c.deleted))
+
+c = FlakyClient(["_ilm/explain"])
+code, out, err = run_main([], c)          # dry-run must still work
+check("dry-run still runs when an advisory endpoint is down", code in (0, None), f"exit={code}")
 
 print()
 print("=" * 62)

@@ -196,6 +196,8 @@ at the cost of the slower `_status` scan.
 | `--skip-recheck` | off | **Safety override.** Skip re-reading the in-use set immediately before deleting |
 | `--batch N` | `50` | Max snapshots per request (also bounded by URL length) |
 | `--timeout N` | `120` | Per-request read timeout in seconds |
+| `--delete-timeout N` | `600` | Read timeout for DELETE requests (deletion is serialised per repository and much slower than a read) |
+| `--sleep SECONDS` | `0` | Pause between batched sizing/delete requests, to pace load on a busy cluster |
 | `--retries N` | `3` | Retries with backoff on read timeouts / `429` / `5xx` |
 | `--per-snapshot` | off | Print the largest **25** orphans with their size (implies `--report-size`; use `--json` for all) |
 | `--audit-file PATH` | — | Write the **full** orphan list + summary/analysis to a text file (screen still shows top 25) |
@@ -448,6 +450,38 @@ Additional hardening:
 
 Every held-back snapshot is listed in the `--audit-file` under **HELD BACK BY SAFETY
 FILTERS**, so nothing is silently dropped.
+
+### Limits, throttling and timeouts
+
+Every call the tool makes, and what constrains it:
+
+| Call | Limit / risk | Handling |
+|------|--------------|----------|
+| `GET _snapshot/<repo>/_all` | ES 8.3+ may **truncate** and report `remaining` | Cursor followed to the end; a non-advancing cursor stops rather than looping |
+| `GET /_all/_settings/…` (in-use) | Hidden/closed indices excluded by default | `expand_wildcards=all`; **hard-fails** on error — never silently empty |
+| `GET _cluster/state/metadata` (cross-check) | Large on big clusters; served by the master | `filter_path` keeps the response tiny; retried; **`--apply` blocked** if it can't be read |
+| `GET /*/_ilm/explain` | Large on clusters with many managed indices | `filter_path`; retried; **`--apply` blocked** if it can't be read |
+| `GET _snapshot/<repo>/_current` | — | Retried; **`--apply` blocked** if it can't be read |
+| `GET _recovery?active_only=true` | Huge without `active_only` | Scoped + `filter_path`; advisory only |
+| `GET _snapshot/<repo>/<names>` (sizing) | HTTP request line capped at 4 kB | Batched under `MAX_URL_BYTES` (3500) |
+| `GET …/_status` (`--incremental`) | Reads per-shard file listings from object storage — **slow and heavy** | Opt-in; tune `--batch`, `--timeout`, `--sleep` |
+| `DELETE _snapshot/<repo>/<names>` | Serialised per repository; rewrites repo metadata; **slow** | Own longer timeout (`--delete-timeout`, default 600s); `404` on retry treated as success |
+| Any call | Elastic Cloud proxy can return **429** under load | Retried with exponential backoff (2s, 4s, 8s…) via `--retries` |
+
+**Fail-closed guarantee.** Calls that feed the orphan decision **exit** on failure rather than
+returning an empty result — an empty in-use set would read as "nothing references this
+snapshot". Advisory calls return *unknown*, and every guard treats unknown as **blocking
+`--apply`**, never as "clear". A dry-run still completes so you can inspect the state.
+
+**Pacing.** `--sleep SECONDS` pauses between batched sizing and delete requests. On a large
+repository with `--incremental`, `--sleep 1 --batch 20` keeps load off the cluster and off
+object storage. Deletion is serialised by Elasticsearch anyway, so pacing costs little.
+
+```bash
+# gentle settings for a big / busy production repository
+./orphaned_searchable_snapshots.py --cluster prod --incremental \
+  --batch 20 --timeout 300 --sleep 1 --retries 5
+```
 
 ### Precondition: one cluster per repository
 

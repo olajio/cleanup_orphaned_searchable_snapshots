@@ -107,6 +107,18 @@ deployments, an index mounted on the other cluster is invisible here. Elastic Cl
 deployment its own path in `found-snapshots`, so this is normally safe — confirm it for any
 repository you did not provision.
 
+**Limits and pacing.** Snapshot listings are paginated when Elasticsearch truncates them;
+sizing/delete requests are batched under the 4 kB HTTP request-line cap; `429`/`5xx` retry with
+exponential backoff; deletes get their own longer timeout (`--delete-timeout`, default 600s)
+because deletion is serialised per repository. Use `--sleep 1 --batch 20 --timeout 300` to pace
+a large or busy repository. Full table in the
+[HOWTO](HOWTO_orphaned_searchable_snapshots.md#limits-throttling-and-timeouts).
+
+**Fail-closed.** Calls feeding the orphan decision **exit** on failure rather than returning an
+empty result (an empty in-use set would read as "nothing references this snapshot"). Advisory
+calls return *unknown*, and every guard treats unknown as **blocking `--apply`** — never as
+"clear". Dry-runs still complete.
+
 **Regression tests** (offline, no cluster needed):
 
 ```bash

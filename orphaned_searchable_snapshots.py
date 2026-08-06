@@ -253,6 +253,15 @@ def fetch_secret_creds(secret_name, region):
 RETRYABLE_STATUS = {429, 502, 503, 504}
 
 
+class HttpError(str):
+    """An HTTP failure that also carries the status code (str for easy messaging)."""
+
+    def __new__(cls, code, body):
+        self = str.__new__(cls, f"HTTP {code}\n{body}".rstrip())
+        self.code = code
+        return self
+
+
 class ESClient:
     def __init__(self, url, api_key, insecure=False, timeout=120, retries=3):
         if not api_key:
@@ -271,56 +280,73 @@ class ESClient:
             self.ctx.check_hostname = False
             self.ctx.verify_mode = ssl.CERT_NONE
 
-    def _request(self, method, path):
+    def _attempt(self, method, path, timeout):
+        """One HTTP attempt. Returns (result, error, retryable)."""
         req = urllib.request.Request(self.base + path, headers=self.headers, method=method)
-        last_err = None
+        try:
+            with urllib.request.urlopen(req, context=self.ctx, timeout=timeout) as resp:
+                body = resp.read().decode()
+                return (json.loads(body) if body else {}), None, False
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            return None, HttpError(e.code, body), e.code in RETRYABLE_STATUS
+        except (socket.timeout, TimeoutError):
+            return None, f"read timed out after {timeout}s", True
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, (socket.timeout, TimeoutError)):
+                return None, f"read timed out after {timeout}s", True
+            return None, str(e.reason), False
+
+    def _request(self, method, path, timeout=None, soft=False, ok_status=()):
+        """Issue a request with retry/backoff.
+
+        soft=False -> any unrecoverable failure exits the process. Used for every call
+        whose result feeds the orphan decision: a silent empty result there would be
+        read as "nothing references this snapshot", which is exactly how live data gets
+        deleted. Failing loudly is the only safe behaviour.
+
+        soft=True  -> returns None instead of exiting, for advisory/cross-check calls
+        that the caller knows how to treat as "unknown" (never as "clear").
+        """
+        timeout = timeout or self.timeout
+        last = None
         for attempt in range(self.retries + 1):
-            try:
-                with urllib.request.urlopen(req, context=self.ctx, timeout=self.timeout) as resp:
-                    body = resp.read().decode()
-                    return json.loads(body) if body else {}
-            except urllib.error.HTTPError as e:
-                if e.code in RETRYABLE_STATUS and attempt < self.retries:
-                    last_err = f"HTTP {e.code}"
-                else:
-                    body = e.read().decode(errors="replace")
-                    sys.exit(f"ERROR: {method} {path} -> HTTP {e.code}\n{body}")
-            except (socket.timeout, TimeoutError) as e:
-                last_err = f"read timed out after {self.timeout}s"
-                if attempt >= self.retries:
-                    sys.exit(f"ERROR: {method} {path} -> {last_err} (after {self.retries + 1} attempts).\n"
-                             "Try a smaller --batch, a larger --timeout, or scope with --pattern.")
-            except urllib.error.URLError as e:
-                # urllib wraps socket timeouts here too; retry those, fail others.
-                if isinstance(e.reason, (socket.timeout, TimeoutError)) and attempt < self.retries:
-                    last_err = f"read timed out after {self.timeout}s"
-                else:
-                    sys.exit(f"ERROR: {method} {path} -> {e.reason}")
-            # Exponential backoff before the next attempt: 2s, 4s, 8s, ...
+            result, err, retryable = self._attempt(method, path, timeout)
+            if err is None:
+                return result
+            if isinstance(err, HttpError) and err.code in ok_status:
+                return {}
+            last = err
+            if not retryable or attempt >= self.retries:
+                break
             backoff = 2 ** (attempt + 1)
-            sys.stderr.write(f"  (retry {attempt + 1}/{self.retries} after {last_err}; waiting {backoff}s)\n")
+            sys.stderr.write(f"  (retry {attempt + 1}/{self.retries} after {err}; "
+                             f"waiting {backoff}s)\n")
             time.sleep(backoff)
-        return {}
+        if soft:
+            return None
+        hint = ""
+        if isinstance(last, str) and "timed out" in last:
+            hint = ("\nTry a smaller --batch, a larger --timeout, or scope with --pattern.")
+        sys.exit(f"ERROR: {method} {path} -> {last}{hint}")
 
     def get(self, path):
         return self._request("GET", path)
 
-    def delete(self, path):
-        return self._request("DELETE", path)
+    def delete(self, path, timeout=None):
+        # 404 == the snapshot is already gone. That is the expected outcome when a
+        # delete succeeded server-side but the response timed out and we retried, so
+        # treat it as success rather than aborting a half-finished cleanup.
+        return self._request("DELETE", path, timeout=timeout, ok_status=(404,))
 
-    def get_optional(self, path):
-        """GET that returns None instead of exiting when the call is rejected.
+    def get_optional(self, path, timeout=None):
+        """GET that returns None (== "could not determine") instead of exiting.
 
-        Used for the cross-check / advisory calls (cluster state, ILM explain) so a
-        missing privilege degrades to a warning rather than killing the run.
+        Retries exactly like get(). Callers MUST treat None as unknown, never as an
+        empty/clear result -- a guard that silently passes when it could not run is
+        worse than no guard.
         """
-        req = urllib.request.Request(self.base + path, headers=self.headers, method="GET")
-        try:
-            with urllib.request.urlopen(req, context=self.ctx, timeout=self.timeout) as resp:
-                body = resp.read().decode()
-                return json.loads(body) if body else {}
-        except Exception:
-            return None
+        return self._request("GET", path, timeout=timeout, soft=True)
 
 
 # ---------------------------------------------------------------------------
@@ -447,14 +473,17 @@ def collect_in_use(es, repo):
 def in_progress_repo_operations(es, repo):
     """(snapshots_running, restores_running) for the repository.
 
-    Deleting from a repository while a snapshot or restore is running against it can
-    fail or interfere with the running operation, and a restore in flight references
-    blobs that no mounted index points at yet.
+    Either value is None when it could NOT be determined (timeout, 429, missing
+    privilege). Callers must treat None as "unknown" and block, not as "idle" -- a
+    guard that silently passes because its own request failed is worse than no guard.
     """
-    running = es.get_optional(f"/_snapshot/{repo}/_current?ignore_unavailable=true") or {}
-    snaps = len(running.get("snapshots") or [])
+    running = es.get_optional(f"/_snapshot/{repo}/_current?ignore_unavailable=true")
+    snaps = None if running is None else len(running.get("snapshots") or [])
+
     rec = es.get_optional("/_recovery?active_only=true&expand_wildcards=all"
-                          "&filter_path=*.shards.type") or {}
+                          "&filter_path=*.shards.type")
+    if rec is None:
+        return snaps, None
     restores = 0
     for body in rec.values():
         for shard in (body or {}).get("shards") or []:
@@ -468,12 +497,13 @@ def ilm_indices_in_flight(es):
 
     While that action runs there is a window where the snapshot already exists in
     the repository but nothing references it yet -- it looks exactly like an orphan.
-    Returns a set of index names (empty if the call is unavailable).
+    Returns a set of index names, or None when the call could not be made -- which the
+    caller must treat as "unknown", not as "nothing in flight".
     """
     data = es.get_optional("/*/_ilm/explain?expand_wildcards=all&only_managed=true"
                            "&filter_path=indices.*.index,indices.*.action,indices.*.step")
-    if not data:
-        return set()
+    if data is None:
+        return None
     out = set()
     for index, body in (data.get("indices") or {}).items():
         if (body or {}).get("action") == "searchable_snapshot":
@@ -559,7 +589,7 @@ def list_all_snapshots(es, repo):
     return out
 
 
-def size_via_index_details(es, repo, names, batch):
+def size_via_index_details(es, repo, names, batch, sleep=0.0):
     """Fast sizing: total (logical) size per snapshot from the Get Snapshot API's
     index_details (snapshot metadata), NOT the heavy _status shard scan.
 
@@ -582,10 +612,12 @@ def size_via_index_details(es, repo, names, batch):
             per[snap.get("snapshot")] = {"total": t}
         done += len(chunk)
         sys.stderr.write(f"  ...sized {done}/{len(names)}\n")
+        if sleep and done < len(names):
+            time.sleep(sleep)
     return total, per
 
 
-def size_via_status(es, repo, names, batch):
+def size_via_status(es, repo, names, batch, sleep=0.0):
     """Precise sizing via _status: returns (total_bytes, incremental_bytes, per).
     per[name] = {"total": bytes, "incremental": bytes}. The _status API reads
     per-shard file listings from the repository and is SLOW/heavy on large repos --
@@ -606,18 +638,29 @@ def size_via_status(es, repo, names, batch):
             per[snap.get("snapshot")] = {"total": t, "incremental": inc}
         done += len(chunk)
         sys.stderr.write(f"  ...sized {done}/{len(names)}\n")
+        if sleep and done < len(names):
+            time.sleep(sleep)
     return total, incr, per
 
 
-def delete_snapshots(es, repo, names, batch):
-    """Delete the given snapshots in URL-length-bounded batches. Returns count."""
+def delete_snapshots(es, repo, names, batch, timeout=None, sleep=0.0):
+    """Delete the given snapshots in URL-length-bounded batches. Returns count.
+
+    Snapshot deletion is serialised per repository and rewrites repository metadata,
+    so a large batch can take far longer than an ordinary read -- hence the separate,
+    longer timeout (--delete-timeout). A 404 is treated as success by the client: if
+    the delete completed server-side but the response timed out, the retry finds the
+    snapshot already gone, and aborting there would leave the cleanup half-finished.
+    """
     overhead = len(f"/_snapshot/{repo}/")
     deleted = 0
     for chunk in url_batches(names, overhead, batch):
         csv = ",".join(chunk)
-        es.delete(f"/_snapshot/{repo}/{csv}")
+        es.delete(f"/_snapshot/{repo}/{csv}", timeout=timeout)
         deleted += len(chunk)
         sys.stderr.write(f"  ...deleted {deleted}/{len(names)}\n")
+        if sleep and deleted < len(names):
+            time.sleep(sleep)
     return deleted
 
 
@@ -954,6 +997,14 @@ def main():
                     help="Max snapshots per request (also bounded by URL length).")
     ap.add_argument("--timeout", type=int, default=120,
                     help="Per-request read timeout in seconds (default 120).")
+    ap.add_argument("--delete-timeout", type=int, default=600,
+                    help="Read timeout in seconds for DELETE requests (default 600). Snapshot "
+                         "deletion is serialised per repository and rewrites repository "
+                         "metadata, so it can take far longer than a read.")
+    ap.add_argument("--sleep", type=float, default=0.0, metavar="SECONDS",
+                    help="Pause this long between batched sizing/delete requests, to pace load "
+                         "on a busy cluster (default 0). Try 1-2 with --incremental on a large "
+                         "repository.")
     ap.add_argument("--retries", type=int, default=3,
                     help="Retries with exponential backoff on read timeouts / 429 / 5xx (default 3).")
     ap.add_argument("--per-snapshot", action="store_true",
@@ -1084,7 +1135,11 @@ def main():
 
     # 3. ILM mid-flight on an index whose snapshot is in the candidate list.
     inflight = ilm_indices_in_flight(es)
-    conflicts = inflight_conflicts(orphans, inflight)
+    ilm_unknown = inflight is None
+    if ilm_unknown:
+        sys.stderr.write("  SAFETY: could not read _ilm/explain, so ILM in-flight mounts cannot be\n"
+                         "          checked (needs read_ilm). This blocks --apply.\n")
+    conflicts = inflight_conflicts(orphans, inflight or set())
     if conflicts:
         sys.stderr.write(f"  SAFETY: {len(conflicts)} candidate(s) match an index ILM is currently "
                          "running the searchable_snapshot action on:\n")
@@ -1116,7 +1171,10 @@ def main():
     #    frozen mounts this is routinely non-zero, and a correctly-identified orphan is
     #    by definition not the snapshot any recovering shard is reading.
     running_snaps, running_restores = in_progress_repo_operations(es, args.repo)
-    if running_snaps:
+    if running_snaps is None:
+        sys.stderr.write("  SAFETY: could not determine whether a snapshot is running against "
+                         f"{args.repo}. This blocks --apply.\n")
+    elif running_snaps:
         sys.stderr.write(f"  SAFETY: {running_snaps} snapshot(s) currently running against "
                          f"{args.repo} -- this blocks --apply.\n")
     if running_restores:
@@ -1185,13 +1243,13 @@ def main():
         if args.incremental:
             sys.stderr.write(f"Sizing {len(orphans)} orphan(s) via _status "
                              f"(dedup-aware, batch<= {args.batch})...\n")
-            total, incr, per = size_via_status(es, args.repo, orphans, args.batch)
+            total, incr, per = size_via_status(es, args.repo, orphans, args.batch, args.sleep)
             report["incremental_bytes"] = incr
             report["incremental_human"] = human(incr)
         else:
             sys.stderr.write(f"Sizing {len(orphans)} orphan(s) via index_details "
                              f"(fast, batch<= {args.batch})...\n")
-            total, per = size_via_index_details(es, args.repo, orphans, args.batch)
+            total, per = size_via_index_details(es, args.repo, orphans, args.batch, args.sleep)
         report.update({
             "measured_count": len(per),
             "total_bytes": total,
@@ -1214,7 +1272,7 @@ def main():
         in_use_names = sorted(in_use)
         sys.stderr.write(f"Sizing {len(in_use_names)} in-use searchable snapshot(s) for "
                          f"frozen-tier % (index_details)...\n")
-        in_use_total, _ = size_via_index_details(es, args.repo, in_use_names, args.batch)
+        in_use_total, _ = size_via_index_details(es, args.repo, in_use_names, args.batch, args.sleep)
         orphan_total = report.get("total_bytes", 0)
         frozen_total = orphan_total + in_use_total
         pct = (100.0 * orphan_total / frozen_total) if frozen_total else 0.0
@@ -1281,6 +1339,13 @@ def main():
         if in_use_info["only_in_cluster_state"]:
             sys.exit("ERROR: refusing to delete -- indices were visible only in the cluster state, "
                      "meaning the settings query is under-resolving. Investigate before deleting.")
+        if ilm_unknown:
+            sys.exit("ERROR: refusing to delete -- _ilm/explain could not be read, so a "
+                     "searchable_snapshot action in flight cannot be ruled out. Grant the "
+                     "API key 'read_ilm' and re-run.")
+        if running_snaps is None:
+            sys.exit("ERROR: refusing to delete -- could not determine whether a snapshot is "
+                     f"running against {args.repo}. Re-run when the cluster is responsive.")
         if running_snaps:
             sys.exit(f"ERROR: refusing to delete -- {running_snaps} snapshot(s) currently "
                      f"running against {args.repo}. Wait for them to finish and re-run.")
@@ -1312,7 +1377,8 @@ def main():
             report["deleted"] = 0
         else:
             sys.stderr.write(f"Deleting {len(orphans)} orphan(s) (batch<= {args.batch})...\n")
-            report["deleted"] = delete_snapshots(es, args.repo, orphans, args.batch)
+            report["deleted"] = delete_snapshots(es, args.repo, orphans, args.batch,
+                                             timeout=args.delete_timeout, sleep=args.sleep)
 
         # Post-delete health check. Deleting a snapshot a mounted index needs does not
         # fail loudly -- Elasticsearch only notices on the next cache miss (shard
