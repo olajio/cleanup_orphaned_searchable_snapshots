@@ -1,0 +1,478 @@
+# 49: GET _cluster/allocation/explain [200 OK]
+{
+  "note": "No shard was specified in the explain API request, so this response explains a randomly chosen unassigned shard. There may be other unassigned shards in this cluster which cannot be assigned for different reasons. It may not be possible to assign this shard until one of the other shards is assigned correctly. To explain the allocation of other shards (whether assigned or unassigned) you must specify the target shard in the request to this API. See https://www.elastic.co/docs/api/doc/elasticsearch/v9/operation/operation-cluster-allocation-explain?version=9.3 for more information.",
+  "index": "partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112",
+  "shard": 0,
+  "primary": true,
+  "current_state": "unassigned",
+  "unassigned_info": {
+    "reason": "ALLOCATION_FAILED",
+    "at": "2026-08-05T16:00:46.899Z",
+    "failed_allocation_attempts": 5,
+    "details": """failed shard on node [PYQQA3hYSWiQrtMFRbKe2w]: failed recovery, failure org.elasticsearch.indices.recovery.RecoveryFailedException: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]: Recovery failed on {instance-0000000140}{PYQQA3hYSWiQrtMFRbKe2w}{HovWZNndQO2dQuYtx9l48w}{instance-0000000140}{172.25.243.225}{172.25.243.225:19456}{f}{9.3.3}{8000099-9060001}{instance_configuration=aws.es.datahot.c6gd, xpack.installed=true, transform.config_version=10.0.0, availability_zone=us-east-1b, region=us-east-1, server_name=instance-0000000140.7b6dd29cb0d04ef39ca883e51dadb570, logical_availability_zone=zone-0, ml.config_version=12.0.0}
+	at org.elasticsearch.index.shard.IndexShard.lambda$executeRecovery$52(IndexShard.java:3743)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoveryListener$9(StoreRecovery.java:411)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations.safeOnFailure(ActionListenerImplementations.java:89)
+	at org.elasticsearch.action.DelegatingActionListener.onFailure(DelegatingActionListener.java:32)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoverFromRepository$19(StoreRecovery.java:610)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.acceptException(ActionListenerImplementations.java:202)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.onFailure(ActionListenerImplementations.java:207)
+	at org.elasticsearch.action.support.SubscribableListener$FailureResult.complete(SubscribableListener.java:435)
+	at org.elasticsearch.action.support.SubscribableListener.tryComplete(SubscribableListener.java:347)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:239)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:197)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:606)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:321)
+	at org.elasticsearch.index.shard.IndexShard.restoreFromRepository(IndexShard.java:2693)
+	at org.elasticsearch.index.shard.IndexShard.lambda$startRecovery$48(IndexShard.java:3671)
+	at org.elasticsearch.action.ActionRunnable$4.doRun(ActionRunnable.java:101)
+	at org.elasticsearch.common.util.concurrent.ThreadContext$ContextPreservingAbstractRunnable.doRun(ThreadContext.java:1113)
+	at org.elasticsearch.common.util.concurrent.AbstractRunnable.run(AbstractRunnable.java:27)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1090)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:614)
+	at java.lang.Thread.run(Thread.java:1474)
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.shard.IndexShardRecoveryException: failed recovery
+	... 24 more
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.snapshots.IndexShardRestoreFailedException: restore failed
+	... 18 more
+Caused by: org.elasticsearch.snapshots.SnapshotMissingException: [found-snapshots:2026.07.19-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112-metrics-apm.service_summary_60m_metrics-default_policy-5sj_o9ept-q2uda5nf4zpa/DON-2pZATCGwsvSDRq-OPw] is missing
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4003)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.lambda$create$9(SearchableSnapshotDirectory.java:612)
+	at org.elasticsearch.common.util.LazyInitializable.maybeCompute(LazyInitializable.java:93)
+	at org.elasticsearch.common.util.LazyInitializable.getOrCompute(LazyInitializable.java:71)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.loadSnapshot(SearchableSnapshotDirectory.java:210)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.ensureSnapshotIsLoaded(SearchableSnapshotIndexEventListener.java:79)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.beforeIndexShardRecovery(SearchableSnapshotIndexEventListener.java:64)
+	at org.elasticsearch.index.CompositeIndexEventListener.lambda$iterateBeforeIndexShardRecovery$16(CompositeIndexEventListener.java:325)
+	at org.elasticsearch.index.CompositeIndexEventListener.callListeners(CompositeIndexEventListener.java:291)
+	at org.elasticsearch.index.CompositeIndexEventListener.iterateBeforeIndexShardRecovery(CompositeIndexEventListener.java:322)
+	at org.elasticsearch.index.CompositeIndexEventListener.beforeIndexShardRecovery(CompositeIndexEventListener.java:349)
+	at org.elasticsearch.index.shard.IndexShard.preRecovery(IndexShard.java:1918)
+	at org.elasticsearch.action.ActionListener.run(ActionListener.java:465)
+	at org.elasticsearch.action.support.SubscribableListener.newForked(SubscribableListener.java:155)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:542)
+	... 9 more
+Caused by: java.nio.file.NoSuchFileException: Blob object [snapshots/7b6dd29cb0d04ef39ca883e51dadb570/indices/VPwK3L6CSj6COBjKiLczNQ/0/snap-DON-2pZATCGwsvSDRq-OPw.dat] not found: The specified key does not exist. (Service: S3, Status Code: 404, Request ID: NB782MMEPQNV72JF, Extended Request ID: LqJCQs14i2wLfCiNjeDxG6oklgOX3iomNvJIARQk8B5h/5mK+MJBHOJ0ZmopaLc/VcCbIAPISyY=) (SDK Attempt Count: 1)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:70)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:53)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.openStreamWithRetry(RetryingInputStream.java:112)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.<init>(RetryingInputStream.java:101)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:50)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:45)
+	at org.elasticsearch.repositories.s3.S3BlobContainer.readBlob(S3BlobContainer.java:119)
+	at org.elasticsearch.common.blobstore.support.FilterBlobContainer.readBlob(FilterBlobContainer.java:61)
+	at org.elasticsearch.xpack.searchablesnapshots.store.BlobContainerSupplier$RateLimitingBlobContainer.readBlob(BlobContainerSupplier.java:87)
+	at org.elasticsearch.repositories.blobstore.ChecksumBlobStoreFormat.read(ChecksumBlobStoreFormat.java:125)
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4001)
+	... 23 more
+""",
+    "last_allocation_status": "no"
+  },
+  "can_allocate": "no",
+  "allocate_explanation": "Elasticsearch isn't allowed to allocate this shard to any of the nodes in the cluster. Choose a node to which you expect this shard to be allocated, find this node in the node-by-node explanation, and address the reasons which prevent Elasticsearch from allocating this shard there.",
+  "node_allocation_decisions": [
+    {
+      "node_id": "-T2NU4PuRSyLd_lTTqqXfQ",
+      "node_name": "instance-0000000131",
+      "transport_address": "172.22.214.8:19817",
+      "node_attributes": {
+        "availability_zone": "us-east-1a",
+        "transform.config_version": "10.0.0",
+        "xpack.installed": "true",
+        "instance_configuration": "aws.es.datahot.c6gd",
+        "ml.config_version": "12.0.0",
+        "logical_availability_zone": "zone-1",
+        "server_name": "instance-0000000131.7b6dd29cb0d04ef39ca883e51dadb570",
+        "region": "us-east-1"
+      },
+      "roles": [
+        "data_content",
+        "data_hot",
+        "ingest",
+        "master",
+        "remote_cluster_client",
+        "transform"
+      ],
+      "node_decision": "no",
+      "deciders": [
+        {
+          "decider": "max_retry",
+          "decision": "NO",
+          "explanation": """shard has exceeded the maximum number of retries [5] on failed allocation attempts - manually call [POST /_cluster/reroute?retry_failed] to retry, and for more information, see [https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnose-unassigned-shards?version=9.3#maximum-retries-exceeded] [unassigned_info[[reason=ALLOCATION_FAILED], at[2026-08-05T16:00:46.899Z], failed_attempts[5], failed_nodes[[PYQQA3hYSWiQrtMFRbKe2w]], delayed=false, last_node[PYQQA3hYSWiQrtMFRbKe2w], details[failed shard on node [PYQQA3hYSWiQrtMFRbKe2w]: failed recovery, failure org.elasticsearch.indices.recovery.RecoveryFailedException: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]: Recovery failed on {instance-0000000140}{PYQQA3hYSWiQrtMFRbKe2w}{HovWZNndQO2dQuYtx9l48w}{instance-0000000140}{172.25.243.225}{172.25.243.225:19456}{f}{9.3.3}{8000099-9060001}{instance_configuration=aws.es.datahot.c6gd, xpack.installed=true, transform.config_version=10.0.0, availability_zone=us-east-1b, region=us-east-1, server_name=instance-0000000140.7b6dd29cb0d04ef39ca883e51dadb570, logical_availability_zone=zone-0, ml.config_version=12.0.0}
+	at org.elasticsearch.index.shard.IndexShard.lambda$executeRecovery$52(IndexShard.java:3743)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoveryListener$9(StoreRecovery.java:411)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations.safeOnFailure(ActionListenerImplementations.java:89)
+	at org.elasticsearch.action.DelegatingActionListener.onFailure(DelegatingActionListener.java:32)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoverFromRepository$19(StoreRecovery.java:610)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.acceptException(ActionListenerImplementations.java:202)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.onFailure(ActionListenerImplementations.java:207)
+	at org.elasticsearch.action.support.SubscribableListener$FailureResult.complete(SubscribableListener.java:435)
+	at org.elasticsearch.action.support.SubscribableListener.tryComplete(SubscribableListener.java:347)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:239)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:197)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:606)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:321)
+	at org.elasticsearch.index.shard.IndexShard.restoreFromRepository(IndexShard.java:2693)
+	at org.elasticsearch.index.shard.IndexShard.lambda$startRecovery$48(IndexShard.java:3671)
+	at org.elasticsearch.action.ActionRunnable$4.doRun(ActionRunnable.java:101)
+	at org.elasticsearch.common.util.concurrent.ThreadContext$ContextPreservingAbstractRunnable.doRun(ThreadContext.java:1113)
+	at org.elasticsearch.common.util.concurrent.AbstractRunnable.run(AbstractRunnable.java:27)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1090)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:614)
+	at java.lang.Thread.run(Thread.java:1474)
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.shard.IndexShardRecoveryException: failed recovery
+	... 24 more
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.snapshots.IndexShardRestoreFailedException: restore failed
+	... 18 more
+Caused by: org.elasticsearch.snapshots.SnapshotMissingException: [found-snapshots:2026.07.19-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112-metrics-apm.service_summary_60m_metrics-default_policy-5sj_o9ept-q2uda5nf4zpa/DON-2pZATCGwsvSDRq-OPw] is missing
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4003)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.lambda$create$9(SearchableSnapshotDirectory.java:612)
+	at org.elasticsearch.common.util.LazyInitializable.maybeCompute(LazyInitializable.java:93)
+	at org.elasticsearch.common.util.LazyInitializable.getOrCompute(LazyInitializable.java:71)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.loadSnapshot(SearchableSnapshotDirectory.java:210)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.ensureSnapshotIsLoaded(SearchableSnapshotIndexEventListener.java:79)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.beforeIndexShardRecovery(SearchableSnapshotIndexEventListener.java:64)
+	at org.elasticsearch.index.CompositeIndexEventListener.lambda$iterateBeforeIndexShardRecovery$16(CompositeIndexEventListener.java:325)
+	at org.elasticsearch.index.CompositeIndexEventListener.callListeners(CompositeIndexEventListener.java:291)
+	at org.elasticsearch.index.CompositeIndexEventListener.iterateBeforeIndexShardRecovery(CompositeIndexEventListener.java:322)
+	at org.elasticsearch.index.CompositeIndexEventListener.beforeIndexShardRecovery(CompositeIndexEventListener.java:349)
+	at org.elasticsearch.index.shard.IndexShard.preRecovery(IndexShard.java:1918)
+	at org.elasticsearch.action.ActionListener.run(ActionListener.java:465)
+	at org.elasticsearch.action.support.SubscribableListener.newForked(SubscribableListener.java:155)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:542)
+	... 9 more
+Caused by: java.nio.file.NoSuchFileException: Blob object [snapshots/7b6dd29cb0d04ef39ca883e51dadb570/indices/VPwK3L6CSj6COBjKiLczNQ/0/snap-DON-2pZATCGwsvSDRq-OPw.dat] not found: The specified key does not exist. (Service: S3, Status Code: 404, Request ID: NB782MMEPQNV72JF, Extended Request ID: LqJCQs14i2wLfCiNjeDxG6oklgOX3iomNvJIARQk8B5h/5mK+MJBHOJ0ZmopaLc/VcCbIAPISyY=) (SDK Attempt Count: 1)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:70)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:53)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.openStreamWithRetry(RetryingInputStream.java:112)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.<init>(RetryingInputStream.java:101)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:50)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:45)
+	at org.elasticsearch.repositories.s3.S3BlobContainer.readBlob(S3BlobContainer.java:119)
+	at org.elasticsearch.common.blobstore.support.FilterBlobContainer.readBlob(FilterBlobContainer.java:61)
+	at org.elasticsearch.xpack.searchablesnapshots.store.BlobContainerSupplier$RateLimitingBlobContainer.readBlob(BlobContainerSupplier.java:87)
+	at org.elasticsearch.repositories.blobstore.ChecksumBlobStoreFormat.read(ChecksumBlobStoreFormat.java:125)
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4001)
+	... 23 more
+], allocation_status[deciders_no]]]"""
+        },
+        {
+          "decider": "data_tier",
+          "decision": "NO",
+          "explanation": "index has a preference for tiers [data_frozen] and node does not meet the required [data_frozen] tier"
+        },
+        {
+          "decider": "has_frozen_cache",
+          "decision": "NO",
+          "explanation": "node setting [xpack.searchable.snapshot.shared_cache.size] is set to zero, so shards of partially mounted indices cannot be allocated to this node"
+        }
+      ]
+    },
+    {
+      "node_id": "-id6PmbVQiW2KpuB3b8Aag",
+      "node_name": "instance-0000000132",
+      "transport_address": "172.22.235.101:19176",
+      "node_attributes": {
+        "availability_zone": "us-east-1b",
+        "xpack.installed": "true",
+        "transform.config_version": "10.0.0",
+        "instance_configuration": "aws.es.datahot.c6gd",
+        "logical_availability_zone": "zone-2",
+        "ml.config_version": "12.0.0",
+        "server_name": "instance-0000000132.7b6dd29cb0d04ef39ca883e51dadb570",
+        "region": "us-east-1"
+      },
+      "roles": [
+        "data_content",
+        "data_hot",
+        "ingest",
+        "master",
+        "remote_cluster_client",
+        "transform"
+      ],
+      "node_decision": "no",
+      "deciders": [
+        {
+          "decider": "max_retry",
+          "decision": "NO",
+          "explanation": """shard has exceeded the maximum number of retries [5] on failed allocation attempts - manually call [POST /_cluster/reroute?retry_failed] to retry, and for more information, see [https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnose-unassigned-shards?version=9.3#maximum-retries-exceeded] [unassigned_info[[reason=ALLOCATION_FAILED], at[2026-08-05T16:00:46.899Z], failed_attempts[5], failed_nodes[[PYQQA3hYSWiQrtMFRbKe2w]], delayed=false, last_node[PYQQA3hYSWiQrtMFRbKe2w], details[failed shard on node [PYQQA3hYSWiQrtMFRbKe2w]: failed recovery, failure org.elasticsearch.indices.recovery.RecoveryFailedException: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]: Recovery failed on {instance-0000000140}{PYQQA3hYSWiQrtMFRbKe2w}{HovWZNndQO2dQuYtx9l48w}{instance-0000000140}{172.25.243.225}{172.25.243.225:19456}{f}{9.3.3}{8000099-9060001}{instance_configuration=aws.es.datahot.c6gd, xpack.installed=true, transform.config_version=10.0.0, availability_zone=us-east-1b, region=us-east-1, server_name=instance-0000000140.7b6dd29cb0d04ef39ca883e51dadb570, logical_availability_zone=zone-0, ml.config_version=12.0.0}
+	at org.elasticsearch.index.shard.IndexShard.lambda$executeRecovery$52(IndexShard.java:3743)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoveryListener$9(StoreRecovery.java:411)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations.safeOnFailure(ActionListenerImplementations.java:89)
+	at org.elasticsearch.action.DelegatingActionListener.onFailure(DelegatingActionListener.java:32)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoverFromRepository$19(StoreRecovery.java:610)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.acceptException(ActionListenerImplementations.java:202)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.onFailure(ActionListenerImplementations.java:207)
+	at org.elasticsearch.action.support.SubscribableListener$FailureResult.complete(SubscribableListener.java:435)
+	at org.elasticsearch.action.support.SubscribableListener.tryComplete(SubscribableListener.java:347)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:239)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:197)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:606)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:321)
+	at org.elasticsearch.index.shard.IndexShard.restoreFromRepository(IndexShard.java:2693)
+	at org.elasticsearch.index.shard.IndexShard.lambda$startRecovery$48(IndexShard.java:3671)
+	at org.elasticsearch.action.ActionRunnable$4.doRun(ActionRunnable.java:101)
+	at org.elasticsearch.common.util.concurrent.ThreadContext$ContextPreservingAbstractRunnable.doRun(ThreadContext.java:1113)
+	at org.elasticsearch.common.util.concurrent.AbstractRunnable.run(AbstractRunnable.java:27)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1090)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:614)
+	at java.lang.Thread.run(Thread.java:1474)
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.shard.IndexShardRecoveryException: failed recovery
+	... 24 more
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.snapshots.IndexShardRestoreFailedException: restore failed
+	... 18 more
+Caused by: org.elasticsearch.snapshots.SnapshotMissingException: [found-snapshots:2026.07.19-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112-metrics-apm.service_summary_60m_metrics-default_policy-5sj_o9ept-q2uda5nf4zpa/DON-2pZATCGwsvSDRq-OPw] is missing
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4003)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.lambda$create$9(SearchableSnapshotDirectory.java:612)
+	at org.elasticsearch.common.util.LazyInitializable.maybeCompute(LazyInitializable.java:93)
+	at org.elasticsearch.common.util.LazyInitializable.getOrCompute(LazyInitializable.java:71)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.loadSnapshot(SearchableSnapshotDirectory.java:210)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.ensureSnapshotIsLoaded(SearchableSnapshotIndexEventListener.java:79)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.beforeIndexShardRecovery(SearchableSnapshotIndexEventListener.java:64)
+	at org.elasticsearch.index.CompositeIndexEventListener.lambda$iterateBeforeIndexShardRecovery$16(CompositeIndexEventListener.java:325)
+	at org.elasticsearch.index.CompositeIndexEventListener.callListeners(CompositeIndexEventListener.java:291)
+	at org.elasticsearch.index.CompositeIndexEventListener.iterateBeforeIndexShardRecovery(CompositeIndexEventListener.java:322)
+	at org.elasticsearch.index.CompositeIndexEventListener.beforeIndexShardRecovery(CompositeIndexEventListener.java:349)
+	at org.elasticsearch.index.shard.IndexShard.preRecovery(IndexShard.java:1918)
+	at org.elasticsearch.action.ActionListener.run(ActionListener.java:465)
+	at org.elasticsearch.action.support.SubscribableListener.newForked(SubscribableListener.java:155)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:542)
+	... 9 more
+Caused by: java.nio.file.NoSuchFileException: Blob object [snapshots/7b6dd29cb0d04ef39ca883e51dadb570/indices/VPwK3L6CSj6COBjKiLczNQ/0/snap-DON-2pZATCGwsvSDRq-OPw.dat] not found: The specified key does not exist. (Service: S3, Status Code: 404, Request ID: NB782MMEPQNV72JF, Extended Request ID: LqJCQs14i2wLfCiNjeDxG6oklgOX3iomNvJIARQk8B5h/5mK+MJBHOJ0ZmopaLc/VcCbIAPISyY=) (SDK Attempt Count: 1)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:70)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:53)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.openStreamWithRetry(RetryingInputStream.java:112)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.<init>(RetryingInputStream.java:101)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:50)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:45)
+	at org.elasticsearch.repositories.s3.S3BlobContainer.readBlob(S3BlobContainer.java:119)
+	at org.elasticsearch.common.blobstore.support.FilterBlobContainer.readBlob(FilterBlobContainer.java:61)
+	at org.elasticsearch.xpack.searchablesnapshots.store.BlobContainerSupplier$RateLimitingBlobContainer.readBlob(BlobContainerSupplier.java:87)
+	at org.elasticsearch.repositories.blobstore.ChecksumBlobStoreFormat.read(ChecksumBlobStoreFormat.java:125)
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4001)
+	... 23 more
+], allocation_status[deciders_no]]]"""
+        },
+        {
+          "decider": "data_tier",
+          "decision": "NO",
+          "explanation": "index has a preference for tiers [data_frozen] and node does not meet the required [data_frozen] tier"
+        },
+        {
+          "decider": "has_frozen_cache",
+          "decision": "NO",
+          "explanation": "node setting [xpack.searchable.snapshot.shared_cache.size] is set to zero, so shards of partially mounted indices cannot be allocated to this node"
+        }
+      ]
+    },
+    {
+      "node_id": "PYQQA3hYSWiQrtMFRbKe2w",
+      "node_name": "instance-0000000140",
+      "transport_address": "172.25.243.225:19456",
+      "node_attributes": {
+        "availability_zone": "us-east-1b",
+        "xpack.installed": "true",
+        "transform.config_version": "10.0.0",
+        "instance_configuration": "aws.es.datahot.c6gd",
+        "logical_availability_zone": "zone-0",
+        "ml.config_version": "12.0.0",
+        "server_name": "instance-0000000140.7b6dd29cb0d04ef39ca883e51dadb570",
+        "region": "us-east-1"
+      },
+      "roles": [
+        "data_frozen"
+      ],
+      "node_decision": "no",
+      "deciders": [
+        {
+          "decider": "max_retry",
+          "decision": "NO",
+          "explanation": """shard has exceeded the maximum number of retries [5] on failed allocation attempts - manually call [POST /_cluster/reroute?retry_failed] to retry, and for more information, see [https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnose-unassigned-shards?version=9.3#maximum-retries-exceeded] [unassigned_info[[reason=ALLOCATION_FAILED], at[2026-08-05T16:00:46.899Z], failed_attempts[5], failed_nodes[[PYQQA3hYSWiQrtMFRbKe2w]], delayed=false, last_node[PYQQA3hYSWiQrtMFRbKe2w], details[failed shard on node [PYQQA3hYSWiQrtMFRbKe2w]: failed recovery, failure org.elasticsearch.indices.recovery.RecoveryFailedException: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]: Recovery failed on {instance-0000000140}{PYQQA3hYSWiQrtMFRbKe2w}{HovWZNndQO2dQuYtx9l48w}{instance-0000000140}{172.25.243.225}{172.25.243.225:19456}{f}{9.3.3}{8000099-9060001}{instance_configuration=aws.es.datahot.c6gd, xpack.installed=true, transform.config_version=10.0.0, availability_zone=us-east-1b, region=us-east-1, server_name=instance-0000000140.7b6dd29cb0d04ef39ca883e51dadb570, logical_availability_zone=zone-0, ml.config_version=12.0.0}
+	at org.elasticsearch.index.shard.IndexShard.lambda$executeRecovery$52(IndexShard.java:3743)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoveryListener$9(StoreRecovery.java:411)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations.safeOnFailure(ActionListenerImplementations.java:89)
+	at org.elasticsearch.action.DelegatingActionListener.onFailure(DelegatingActionListener.java:32)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoverFromRepository$19(StoreRecovery.java:610)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.acceptException(ActionListenerImplementations.java:202)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.onFailure(ActionListenerImplementations.java:207)
+	at org.elasticsearch.action.support.SubscribableListener$FailureResult.complete(SubscribableListener.java:435)
+	at org.elasticsearch.action.support.SubscribableListener.tryComplete(SubscribableListener.java:347)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:239)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:197)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:606)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:321)
+	at org.elasticsearch.index.shard.IndexShard.restoreFromRepository(IndexShard.java:2693)
+	at org.elasticsearch.index.shard.IndexShard.lambda$startRecovery$48(IndexShard.java:3671)
+	at org.elasticsearch.action.ActionRunnable$4.doRun(ActionRunnable.java:101)
+	at org.elasticsearch.common.util.concurrent.ThreadContext$ContextPreservingAbstractRunnable.doRun(ThreadContext.java:1113)
+	at org.elasticsearch.common.util.concurrent.AbstractRunnable.run(AbstractRunnable.java:27)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1090)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:614)
+	at java.lang.Thread.run(Thread.java:1474)
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.shard.IndexShardRecoveryException: failed recovery
+	... 24 more
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.snapshots.IndexShardRestoreFailedException: restore failed
+	... 18 more
+Caused by: org.elasticsearch.snapshots.SnapshotMissingException: [found-snapshots:2026.07.19-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112-metrics-apm.service_summary_60m_metrics-default_policy-5sj_o9ept-q2uda5nf4zpa/DON-2pZATCGwsvSDRq-OPw] is missing
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4003)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.lambda$create$9(SearchableSnapshotDirectory.java:612)
+	at org.elasticsearch.common.util.LazyInitializable.maybeCompute(LazyInitializable.java:93)
+	at org.elasticsearch.common.util.LazyInitializable.getOrCompute(LazyInitializable.java:71)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.loadSnapshot(SearchableSnapshotDirectory.java:210)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.ensureSnapshotIsLoaded(SearchableSnapshotIndexEventListener.java:79)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.beforeIndexShardRecovery(SearchableSnapshotIndexEventListener.java:64)
+	at org.elasticsearch.index.CompositeIndexEventListener.lambda$iterateBeforeIndexShardRecovery$16(CompositeIndexEventListener.java:325)
+	at org.elasticsearch.index.CompositeIndexEventListener.callListeners(CompositeIndexEventListener.java:291)
+	at org.elasticsearch.index.CompositeIndexEventListener.iterateBeforeIndexShardRecovery(CompositeIndexEventListener.java:322)
+	at org.elasticsearch.index.CompositeIndexEventListener.beforeIndexShardRecovery(CompositeIndexEventListener.java:349)
+	at org.elasticsearch.index.shard.IndexShard.preRecovery(IndexShard.java:1918)
+	at org.elasticsearch.action.ActionListener.run(ActionListener.java:465)
+	at org.elasticsearch.action.support.SubscribableListener.newForked(SubscribableListener.java:155)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:542)
+	... 9 more
+Caused by: java.nio.file.NoSuchFileException: Blob object [snapshots/7b6dd29cb0d04ef39ca883e51dadb570/indices/VPwK3L6CSj6COBjKiLczNQ/0/snap-DON-2pZATCGwsvSDRq-OPw.dat] not found: The specified key does not exist. (Service: S3, Status Code: 404, Request ID: NB782MMEPQNV72JF, Extended Request ID: LqJCQs14i2wLfCiNjeDxG6oklgOX3iomNvJIARQk8B5h/5mK+MJBHOJ0ZmopaLc/VcCbIAPISyY=) (SDK Attempt Count: 1)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:70)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:53)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.openStreamWithRetry(RetryingInputStream.java:112)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.<init>(RetryingInputStream.java:101)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:50)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:45)
+	at org.elasticsearch.repositories.s3.S3BlobContainer.readBlob(S3BlobContainer.java:119)
+	at org.elasticsearch.common.blobstore.support.FilterBlobContainer.readBlob(FilterBlobContainer.java:61)
+	at org.elasticsearch.xpack.searchablesnapshots.store.BlobContainerSupplier$RateLimitingBlobContainer.readBlob(BlobContainerSupplier.java:87)
+	at org.elasticsearch.repositories.blobstore.ChecksumBlobStoreFormat.read(ChecksumBlobStoreFormat.java:125)
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4001)
+	... 23 more
+], allocation_status[deciders_no]]]"""
+        }
+      ]
+    },
+    {
+      "node_id": "VWgsz_riTeaNN9gNjLih2A",
+      "node_name": "instance-0000000139",
+      "transport_address": "172.22.251.31:19413",
+      "node_attributes": {
+        "availability_zone": "us-east-1e",
+        "transform.config_version": "10.0.0",
+        "xpack.installed": "true",
+        "instance_configuration": "aws.es.datahot.c6gd",
+        "ml.config_version": "12.0.0",
+        "logical_availability_zone": "zone-0",
+        "server_name": "instance-0000000139.7b6dd29cb0d04ef39ca883e51dadb570",
+        "region": "us-east-1"
+      },
+      "roles": [
+        "data_content",
+        "data_hot",
+        "ingest",
+        "master",
+        "remote_cluster_client",
+        "transform"
+      ],
+      "node_decision": "no",
+      "deciders": [
+        {
+          "decider": "max_retry",
+          "decision": "NO",
+          "explanation": """shard has exceeded the maximum number of retries [5] on failed allocation attempts - manually call [POST /_cluster/reroute?retry_failed] to retry, and for more information, see [https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnose-unassigned-shards?version=9.3#maximum-retries-exceeded] [unassigned_info[[reason=ALLOCATION_FAILED], at[2026-08-05T16:00:46.899Z], failed_attempts[5], failed_nodes[[PYQQA3hYSWiQrtMFRbKe2w]], delayed=false, last_node[PYQQA3hYSWiQrtMFRbKe2w], details[failed shard on node [PYQQA3hYSWiQrtMFRbKe2w]: failed recovery, failure org.elasticsearch.indices.recovery.RecoveryFailedException: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]: Recovery failed on {instance-0000000140}{PYQQA3hYSWiQrtMFRbKe2w}{HovWZNndQO2dQuYtx9l48w}{instance-0000000140}{172.25.243.225}{172.25.243.225:19456}{f}{9.3.3}{8000099-9060001}{instance_configuration=aws.es.datahot.c6gd, xpack.installed=true, transform.config_version=10.0.0, availability_zone=us-east-1b, region=us-east-1, server_name=instance-0000000140.7b6dd29cb0d04ef39ca883e51dadb570, logical_availability_zone=zone-0, ml.config_version=12.0.0}
+	at org.elasticsearch.index.shard.IndexShard.lambda$executeRecovery$52(IndexShard.java:3743)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoveryListener$9(StoreRecovery.java:411)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListener$2.onFailure(ActionListener.java:266)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations.safeOnFailure(ActionListenerImplementations.java:89)
+	at org.elasticsearch.action.DelegatingActionListener.onFailure(DelegatingActionListener.java:32)
+	at org.elasticsearch.index.shard.StoreRecovery.lambda$recoverFromRepository$19(StoreRecovery.java:610)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.acceptException(ActionListenerImplementations.java:202)
+	at org.elasticsearch.action.ActionListenerImplementations.safeAcceptException(ActionListenerImplementations.java:78)
+	at org.elasticsearch.action.ActionListenerImplementations$DelegatingResponseActionListener.onFailure(ActionListenerImplementations.java:207)
+	at org.elasticsearch.action.support.SubscribableListener$FailureResult.complete(SubscribableListener.java:435)
+	at org.elasticsearch.action.support.SubscribableListener.tryComplete(SubscribableListener.java:347)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:239)
+	at org.elasticsearch.action.support.SubscribableListener.addListener(SubscribableListener.java:197)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:606)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:321)
+	at org.elasticsearch.index.shard.IndexShard.restoreFromRepository(IndexShard.java:2693)
+	at org.elasticsearch.index.shard.IndexShard.lambda$startRecovery$48(IndexShard.java:3671)
+	at org.elasticsearch.action.ActionRunnable$4.doRun(ActionRunnable.java:101)
+	at org.elasticsearch.common.util.concurrent.ThreadContext$ContextPreservingAbstractRunnable.doRun(ThreadContext.java:1113)
+	at org.elasticsearch.common.util.concurrent.AbstractRunnable.run(AbstractRunnable.java:27)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1090)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:614)
+	at java.lang.Thread.run(Thread.java:1474)
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.shard.IndexShardRecoveryException: failed recovery
+	... 24 more
+Caused by: [partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112/L2aBuDPWQnS6SWEVutCARw][[partial-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112][0]] org.elasticsearch.index.snapshots.IndexShardRestoreFailedException: restore failed
+	... 18 more
+Caused by: org.elasticsearch.snapshots.SnapshotMissingException: [found-snapshots:2026.07.19-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112-metrics-apm.service_summary_60m_metrics-default_policy-5sj_o9ept-q2uda5nf4zpa/DON-2pZATCGwsvSDRq-OPw] is missing
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4003)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.lambda$create$9(SearchableSnapshotDirectory.java:612)
+	at org.elasticsearch.common.util.LazyInitializable.maybeCompute(LazyInitializable.java:93)
+	at org.elasticsearch.common.util.LazyInitializable.getOrCompute(LazyInitializable.java:71)
+	at org.elasticsearch.xpack.searchablesnapshots.store.SearchableSnapshotDirectory.loadSnapshot(SearchableSnapshotDirectory.java:210)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.ensureSnapshotIsLoaded(SearchableSnapshotIndexEventListener.java:79)
+	at org.elasticsearch.xpack.searchablesnapshots.allocation.SearchableSnapshotIndexEventListener.beforeIndexShardRecovery(SearchableSnapshotIndexEventListener.java:64)
+	at org.elasticsearch.index.CompositeIndexEventListener.lambda$iterateBeforeIndexShardRecovery$16(CompositeIndexEventListener.java:325)
+	at org.elasticsearch.index.CompositeIndexEventListener.callListeners(CompositeIndexEventListener.java:291)
+	at org.elasticsearch.index.CompositeIndexEventListener.iterateBeforeIndexShardRecovery(CompositeIndexEventListener.java:322)
+	at org.elasticsearch.index.CompositeIndexEventListener.beforeIndexShardRecovery(CompositeIndexEventListener.java:349)
+	at org.elasticsearch.index.shard.IndexShard.preRecovery(IndexShard.java:1918)
+	at org.elasticsearch.action.ActionListener.run(ActionListener.java:465)
+	at org.elasticsearch.action.support.SubscribableListener.newForked(SubscribableListener.java:155)
+	at org.elasticsearch.index.shard.StoreRecovery.recoverFromRepository(StoreRecovery.java:542)
+	... 9 more
+Caused by: java.nio.file.NoSuchFileException: Blob object [snapshots/7b6dd29cb0d04ef39ca883e51dadb570/indices/VPwK3L6CSj6COBjKiLczNQ/0/snap-DON-2pZATCGwsvSDRq-OPw.dat] not found: The specified key does not exist. (Service: S3, Status Code: 404, Request ID: NB782MMEPQNV72JF, Extended Request ID: LqJCQs14i2wLfCiNjeDxG6oklgOX3iomNvJIARQk8B5h/5mK+MJBHOJ0ZmopaLc/VcCbIAPISyY=) (SDK Attempt Count: 1)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:70)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream$S3BlobStoreServices.getInputStream(S3RetryingInputStream.java:53)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.openStreamWithRetry(RetryingInputStream.java:112)
+	at org.elasticsearch.common.blobstore.RetryingInputStream.<init>(RetryingInputStream.java:101)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:50)
+	at org.elasticsearch.repositories.s3.S3RetryingInputStream.<init>(S3RetryingInputStream.java:45)
+	at org.elasticsearch.repositories.s3.S3BlobContainer.readBlob(S3BlobContainer.java:119)
+	at org.elasticsearch.common.blobstore.support.FilterBlobContainer.readBlob(FilterBlobContainer.java:61)
+	at org.elasticsearch.xpack.searchablesnapshots.store.BlobContainerSupplier$RateLimitingBlobContainer.readBlob(BlobContainerSupplier.java:87)
+	at org.elasticsearch.repositories.blobstore.ChecksumBlobStoreFormat.read(ChecksumBlobStoreFormat.java:125)
+	at org.elasticsearch.repositories.blobstore.BlobStoreRepository.loadShardSnapshot(BlobStoreRepository.java:4001)
+	... 23 more
+], allocation_status[deciders_no]]]"""
+        },
+        {
+          "decider": "data_tier",
+          "decision": "NO",
+          "explanation": "index has a preference for tiers [data_frozen] and node does not meet the required [data_frozen] tier"
+        },
+        {
+          "decider": "has_frozen_cache",
+          "decision": "NO",
+          "explanation": "node setting [xpack.searchable.snapshot.shared_cache.size] is set to zero, so shards of partially mounted indices cannot be allocated to this node"
+        }
+      ]
+    }
+  ]
+}
