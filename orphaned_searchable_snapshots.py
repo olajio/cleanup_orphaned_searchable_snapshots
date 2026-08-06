@@ -171,6 +171,23 @@ VALID_CLUSTERS = ("dev", "qa", "ccs", "prod")
 # Snapshot names go in the request URL; keep each request line under Elasticsearch's
 # http.max_initial_line_length (default 4kb / 4096 bytes). 3500 leaves safe margin.
 MAX_URL_BYTES = 3500
+
+# Stamped into plan and audit files so a result can always be traced to the code
+# that produced it.
+TOOL_VERSION = "2.0"
+
+
+def utc_today():
+    """Today's date in UTC.
+
+    Snapshot timestamps are UTC; using the local date here would make ages off by a
+    day either side of midnight for anyone west or east of UTC.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+def utc_stamp():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 # Sentinel meaning "prompt for the value" when --frozen-tier-capacity is given without one.
 PROMPT_SENTINEL = "__PROMPT__"
 # Binary (1024-based) unit factors, matching the Elastic Cloud console and human().
@@ -664,6 +681,74 @@ def delete_snapshots(es, repo, names, batch, timeout=None, sleep=0.0):
     return deleted
 
 
+def write_plan_file(path, args, orphans, per=None):
+    """Record exactly which snapshots this run selected, for review-then-apply.
+
+    Without this there is no link between the list a human reviewed and the list a
+    later --apply actually deletes: the two runs scan independently and can differ.
+    """
+    plan = {
+        "tool": os.path.basename(__file__),
+        "tool_version": TOOL_VERSION,
+        "generated_utc": utc_stamp(),
+        "cluster": args.cluster,
+        "repo": args.repo,
+        "pattern": args.pattern,
+        "min_snapshot_age_days": args.min_snapshot_age_days,
+        "count": len(orphans),
+        "snapshots": list(orphans),
+    }
+    if per:
+        plan["sizes"] = {n: per[n] for n in orphans if n in per}
+    with open(path, "w") as fh:
+        json.dump(plan, fh, indent=2)
+    sys.stderr.write(f"Plan written to {path} ({len(orphans)} snapshot(s)).\n")
+    return plan
+
+
+def load_plan_file(path, args):
+    """Load a plan and confirm it applies to this cluster/repo. Returns the name set."""
+    try:
+        with open(path) as fh:
+            plan = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        sys.exit(f"ERROR: cannot read plan file '{path}': {e}")
+    if plan.get("repo") != args.repo:
+        sys.exit(f"ERROR: plan file targets repository '{plan.get('repo')}' but --repo is "
+                 f"'{args.repo}'. Refusing to apply a plan built for a different repository.")
+    if plan.get("cluster") != args.cluster:
+        sys.exit(f"ERROR: plan file targets cluster '{plan.get('cluster')}' but --cluster is "
+                 f"'{args.cluster}'. Refusing to apply a plan built for a different cluster.")
+    names = plan.get("snapshots") or []
+    sys.stderr.write(f"Plan loaded from {path}: {len(names)} snapshot(s), generated "
+                     f"{plan.get('generated_utc')} by v{plan.get('tool_version')}.\n")
+    return set(names)
+
+
+def confirm_apply(count, repo, cluster, assume_yes):
+    """Require an explicit typed confirmation before an irreversible delete."""
+    if assume_yes:
+        sys.stderr.write("--yes given; skipping interactive confirmation.\n")
+        return
+    if not sys.stdin.isatty():
+        sys.exit("ERROR: --apply needs confirmation but stdin is not a terminal. "
+                 "Re-run with --yes if this is an automated run.")
+    target = cluster or repo
+    sys.stderr.write(
+        f"\nAbout to PERMANENTLY DELETE {count} snapshot(s) from '{repo}' on '{target}'.\n"
+        "For a frozen index the snapshot IS the data -- this cannot be undone, and\n"
+        "breakage may not surface until the next node restart.\n"
+        f"Type the cluster/repo name ('{target}') to proceed, anything else to abort: ")
+    sys.stderr.flush()
+    try:
+        answer = input().strip()
+    except EOFError:
+        answer = ""
+    if answer != target:
+        sys.exit("Aborted: confirmation did not match. Nothing was deleted.")
+    sys.stderr.write("Confirmed.\n")
+
+
 def analyze_ilm_policies(es):
     """Fetch _ilm/policy and describe every policy that uses searchable_snapshot.
 
@@ -720,12 +805,28 @@ def build_corrected_policy(phases):
     Returns (body_dict, note_str).
     """
     fixed = copy.deepcopy(phases)
-    delete_actions = fixed.get("delete", {}).get("actions", {})
-    if "delete" in delete_actions:
-        prev = delete_actions["delete"].get("delete_searchable_snapshot", True)
-        delete_actions["delete"]["delete_searchable_snapshot"] = True
-        note = ("set delete_searchable_snapshot: true in the existing delete phase "
-                f"(was {json.dumps(prev)})")
+
+    # NEVER rebuild an existing delete phase wholesale. A policy can have a delete
+    # phase carrying the customer's own min_age and other actions (wait_for_snapshot,
+    # etc.) but no `delete` action yet. Replacing the phase would silently rewrite
+    # their retention and drop those actions -- and the generated file is meant to be
+    # applied as-is, so that change would go live unnoticed.
+    existing = fixed.get("delete")
+    if isinstance(existing, dict):
+        actions = existing.setdefault("actions", {})
+        if "delete" in actions:
+            prev = actions["delete"].get("delete_searchable_snapshot", True)
+            actions["delete"]["delete_searchable_snapshot"] = True
+            note = ("set delete_searchable_snapshot: true in the existing delete phase "
+                    f"(was {json.dumps(prev)})")
+        else:
+            actions["delete"] = {"delete_searchable_snapshot": True}
+            kept = existing.get("min_age")
+            note = ("added a delete action to the EXISTING delete phase "
+                    f"(kept min_age {json.dumps(kept)}"
+                    if kept else "added a delete action to the EXISTING delete phase (no min_age set")
+            other = [a for a in actions if a != "delete"]
+            note += f"; preserved actions: {', '.join(other)})" if other else ")"
     else:
         fixed["delete"] = {
             "min_age": DEFAULT_DELETE_MIN_AGE,
@@ -751,7 +852,9 @@ def write_corrected_policies(cluster, ilm_index):
     written = []
     for name, info in sorted(offenders.items()):
         body, note = build_corrected_policy(info.get("phases", {}))
-        path = os.path.join(out_dir, f"{name}.json")
+        # Policy names are cluster-controlled; keep them from escaping out_dir.
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", name).lstrip(".") or "policy"
+        path = os.path.join(out_dir, f"{safe}.json")
         try:
             with open(path, "w") as fh:
                 json.dump(body, fh, indent=2)
@@ -760,7 +863,12 @@ def write_corrected_policies(cluster, ilm_index):
         except OSError as e:
             sys.stderr.write(f"WARNING: could not write '{path}': {e}\n")
     if written:
-        sys.stderr.write(f"Wrote {len(written)} corrected ILM policy file(s) to {out_dir}/\n")
+        # Absolute path: out_dir is relative to the CWD, which is not always where the
+        # operator thinks the files landed.
+        sys.stderr.write(f"Wrote {len(written)} corrected ILM policy file(s) to "
+                         f"{os.path.abspath(out_dir)}/\n")
+        sys.stderr.write("  REVIEW each file before applying -- retention values may be "
+                         "placeholders.\n")
     return written
 
 
@@ -816,7 +924,7 @@ def snapshot_age_days(entry, today=None):
     Prefers the repository's own start_time_in_millis; falls back to the leading
     YYYY.MM.DD that ILM puts in the snapshot name.
     """
-    today = today or datetime.date.today()
+    today = today or utc_today()
     start_ms = entry.get("start_ms")
     if start_ms:
         try:
@@ -976,6 +1084,17 @@ def main():
                          "future orphans).")
     ap.add_argument("--apply", action="store_true",
                     help="Delete the orphans (without this, the tool is a dry run).")
+    ap.add_argument("--plan-file", metavar="PATH",
+                    help="Without --apply: write the selected snapshots to this JSON file for "
+                         "review. With --apply: delete ONLY snapshots listed in this file "
+                         "(still re-verified by every safety check), so what you reviewed is "
+                         "exactly what gets deleted.")
+    ap.add_argument("--yes", action="store_true",
+                    help="Skip the interactive confirmation prompt before --apply. Required for "
+                         "non-interactive/automated runs.")
+    ap.add_argument("--max-delete", type=int, metavar="N",
+                    help="SAFETY: refuse to delete more than N snapshots in one run. A blast-radius "
+                         "cap for the case where a future scan bug selects far too much.")
     ap.add_argument("--min-snapshot-age-days", type=int, default=14, metavar="DAYS",
                     help="SAFETY: never treat a snapshot younger than this as an orphan "
                          "(default 14). A snapshot created minutes or days ago is far more "
@@ -1226,6 +1345,8 @@ def main():
                                   report.get("offending_ilm_policies", []))
         if args.audit_file:
             write_audit_file(args.audit_file, args, report, [], None)
+        if args.plan_file and not args.apply:
+            write_plan_file(args.plan_file, args, [], None)
         if args.json:
             print(json.dumps(report, indent=2))
         else:
@@ -1323,8 +1444,37 @@ def main():
         write_ilm_review_file(args.ilm_review_file, args, review,
                               report.get("offending_ilm_policies", []))
 
+    # Record the selection BEFORE anything destructive happens. If the delete then
+    # crashes or is interrupted, the plan and the pre-delete audit still describe
+    # exactly what this run had selected.
+    if args.plan_file and not args.apply:
+        write_plan_file(args.plan_file, args, orphans, per)
+    if args.audit_file:
+        write_audit_file(args.audit_file, args, report, orphans, per)
+
     # Optional: delete the orphans.
     if args.apply:
+        # Restrict to a previously reviewed plan, if one was supplied. The plan is an
+        # upper bound only -- every safety check still runs, and can only remove more.
+        if args.plan_file:
+            planned = load_plan_file(args.plan_file, args)
+            not_in_plan = sorted(set(orphans) - planned)
+            gone_from_plan = sorted(planned - set(orphans))
+            if not_in_plan:
+                sys.stderr.write(f"  {len(not_in_plan)} candidate(s) appeared since the plan was "
+                                 "written and will NOT be deleted:\n")
+                for s in not_in_plan[:10]:
+                    sys.stderr.write(f"          {s}\n")
+            if gone_from_plan:
+                sys.stderr.write(f"  {len(gone_from_plan)} snapshot(s) in the plan are no longer "
+                                 "candidates (already deleted, or now protected).\n")
+            orphans = [s for s in orphans if s in planned]
+            report["plan_file"] = {
+                "path": args.plan_file, "planned": len(planned),
+                "appeared_since_plan": not_in_plan, "no_longer_candidates": gone_from_plan,
+            }
+            sys.stderr.write(f"  deleting {len(orphans)} snapshot(s) from the plan.\n")
+
         # Hard blocks: conditions under which a delete is not safe to attempt at all.
         if implausible:
             sys.exit("ERROR: refusing to delete -- the in-use scan found zero mounted "
@@ -1376,9 +1526,31 @@ def main():
             sys.stderr.write("Nothing left to delete after the safety re-check.\n")
             report["deleted"] = 0
         else:
+            # Blast-radius cap.
+            if args.max_delete is not None and len(orphans) > args.max_delete:
+                sys.exit(f"ERROR: refusing to delete -- {len(orphans)} snapshots selected but "
+                         f"--max-delete is {args.max_delete}. Review the list, then raise the cap "
+                         "or narrow the run with --pattern.")
+            share = 100.0 * len(orphans) / max(len(all_snaps), 1)
+            if share > 50:
+                sys.stderr.write(f"  WARNING: this deletes {share:.0f}% of every snapshot in the "
+                                 "repository. Confirm that is expected.\n")
+
+            confirm_apply(len(orphans), args.repo, args.cluster, args.yes)
+
             sys.stderr.write(f"Deleting {len(orphans)} orphan(s) (batch<= {args.batch})...\n")
-            report["deleted"] = delete_snapshots(es, args.repo, orphans, args.batch,
-                                             timeout=args.delete_timeout, sleep=args.sleep)
+            try:
+                report["deleted"] = delete_snapshots(es, args.repo, orphans, args.batch,
+                                                     timeout=args.delete_timeout, sleep=args.sleep)
+            except KeyboardInterrupt:
+                # Leave a durable record rather than dying silently mid-cleanup.
+                report["deleted"] = "INTERRUPTED"
+                report["interrupted"] = True
+                if args.audit_file:
+                    write_audit_file(args.audit_file, args, report, orphans, per)
+                sys.exit("\nINTERRUPTED during deletion. Some snapshots may already be gone.\n"
+                         "Re-run the dry-run to see the current state before continuing; the "
+                         f"audit file records the full attempted set{' (' + args.audit_file + ')' if args.audit_file else ''}.")
 
         # Post-delete health check. Deleting a snapshot a mounted index needs does not
         # fail loudly -- Elasticsearch only notices on the next cache miss (shard
@@ -1397,8 +1569,9 @@ def main():
                          "        failure appears on the first cache miss). Re-check cluster health\n"
                          "        after the next node restart or shard relocation.\n")
 
-    # Optional: write the FULL orphan list + analysis to an audit file.
-    if args.audit_file:
+    # Rewrite the audit file now that deletion results and post-delete health are known.
+    # (It was already written before the delete, so a crash cannot leave no record.)
+    if args.audit_file and args.apply:
         write_audit_file(args.audit_file, args, report, orphans, per)
 
     if args.json:
@@ -1508,7 +1681,8 @@ def write_audit_file(path, args, report, orphans, per):
     w("=" * 70)
     w("ORPHANED SEARCHABLE SNAPSHOT AUDIT")
     w("=" * 70)
-    w(f"Generated (UTC) : {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+    w(f"Generated (UTC) : {utc_stamp()}")
+    w(f"Tool version    : {TOOL_VERSION}")
     w(f"Cluster         : {args.cluster or '(from --es-url / ES_URL)'}")
     w(f"Repository      : {report['repo']}")
     w(f"Name pattern    : {report['pattern']}")
@@ -1673,7 +1847,8 @@ def write_ilm_review_file(path, args, review, offending):
     w("=" * 70)
     w("ILM POLICY REVIEW -- SEARCHABLE SNAPSHOT LEAKS")
     w("=" * 70)
-    w(f"Generated (UTC) : {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+    w(f"Generated (UTC) : {utc_stamp()}")
+    w(f"Tool version    : {TOOL_VERSION}")
     w(f"Cluster         : {args.cluster or '(from --es-url / ES_URL)'}")
     w("")
     w("SECTION 1 -- CURRENTLY misconfigured policies that will create NEW orphans")
@@ -1728,4 +1903,9 @@ def write_ilm_review_file(path, args, review, offending):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Interruption during the delete is handled inline (it writes the audit file
+        # first); this only catches Ctrl-C during the read-only phases.
+        sys.exit("\nInterrupted. Nothing was deleted.")

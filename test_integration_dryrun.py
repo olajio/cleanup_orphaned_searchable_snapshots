@@ -159,7 +159,7 @@ check("nothing deleted in dry-run", c.deleted == [])
 print()
 print("=== B. --apply: only genuine orphans are actually DELETEd ===")
 c = FakeClient()
-code, out, err = run_main(["--apply"], c)
+code, out, err = run_main(["--apply", "--yes"], c)
 live_deleted = [s for s in LIVE.values() if s in c.deleted]
 check("no live snapshot deleted", not live_deleted, str(live_deleted))
 check("SLM snapshot not deleted", SLM_SNAP not in c.deleted)
@@ -170,7 +170,7 @@ check("post-delete health reported", "Post-delete cluster health: green" in err)
 print()
 print("=== C. --apply blocked when the settings query regresses ===")
 c = FakeClient(honour_expand_wildcards=False)
-code, out, err = run_main(["--apply"], c)
+code, out, err = run_main(["--apply", "--yes"], c)
 check("run aborted", code != 0, f"exit={code}")
 check("nothing deleted", c.deleted == [], str(c.deleted))
 check("reason names the under-resolving query",
@@ -189,7 +189,7 @@ class BusyClient(FakeClient):
 
 
 c = BusyClient()
-code, out, err = run_main(["--apply"], c)
+code, out, err = run_main(["--apply", "--yes"], c)
 check("run aborted", code != 0, f"exit={code}")
 check("nothing deleted", c.deleted == [])
 
@@ -205,14 +205,14 @@ class RecoveringClient(FakeClient):
 
 
 c = RecoveringClient()
-code, out, err = run_main(["--apply"], c)
+code, out, err = run_main(["--apply", "--yes"], c)
 check("run completed", code in (0, None), f"exit={code}")
 check("genuine orphans still deleted", sorted(c.deleted) == sorted(TRUE_ORPHANS), str(c.deleted))
 
 print()
 print("=== F. --min-snapshot-age-days 0 still cannot delete a live snapshot ===")
 c = FakeClient()
-code, out, err = run_main(["--apply", "--min-snapshot-age-days", "0"], c)
+code, out, err = run_main(["--apply", "--yes", "--min-snapshot-age-days", "0"], c)
 live_deleted = [s for s in LIVE.values() if s in c.deleted]
 check("live snapshots still protected by the in-use scan", not live_deleted, str(live_deleted))
 check("young snapshot now deletable (guard disabled, as documented)", YOUNG_SNAP in c.deleted)
@@ -238,13 +238,96 @@ for label, paths in [("_ilm/explain unavailable", ["_ilm/explain"]),
                      ("_snapshot/_current unavailable", ["_current"]),
                      ("cluster state unavailable", ["_cluster/state"])]:
     c = FlakyClient(paths)
-    code, out, err = run_main(["--apply"], c)
+    code, out, err = run_main(["--apply", "--yes"], c)
     check(f"{label}: --apply refuses", code != 0, f"exit={code}")
     check(f"{label}: nothing deleted", c.deleted == [], str(c.deleted))
 
 c = FlakyClient(["_ilm/explain"])
 code, out, err = run_main([], c)          # dry-run must still work
 check("dry-run still runs when an advisory endpoint is down", code in (0, None), f"exit={code}")
+
+
+print()
+print("=== H. Confirmation is required before deleting ===")
+c = FakeClient()
+code, out, err = run_main(["--apply"], c)   # no --yes, stdin not a tty
+check("non-interactive --apply without --yes refuses", code != 0, f"exit={code}")
+check("nothing deleted without confirmation", c.deleted == [], str(c.deleted))
+
+print()
+print("=== I. Plan file ties what you reviewed to what gets deleted ===")
+import json as _json
+import tempfile
+
+plan_path = os.path.join(tempfile.mkdtemp(), "plan.json")
+c = FakeClient()
+code, out, err = run_main(["--plan-file", plan_path], c)     # dry-run writes the plan
+plan = _json.load(open(plan_path))
+check("plan lists exactly the genuine orphans",
+      sorted(plan["snapshots"]) == sorted(TRUE_ORPHANS), str(plan["snapshots"]))
+check("plan records repo/cluster/version for traceability",
+      plan["repo"] == REPO and "tool_version" in plan and "generated_utc" in plan)
+check("dry-run with --plan-file deletes nothing", c.deleted == [])
+
+# Apply the plan, but the cluster has since grown a new orphan.
+NEW_ORPHAN = "2020.01.01-.ds-appeared-since-the-plan-somepolicy-zzzz"
+_orig = FakeClient._all_snapshots
+
+
+def _with_extra(self):
+    d = _orig(self)
+    d["snapshots"].append({"snapshot": NEW_ORPHAN, "state": "SUCCESS",
+                           "start_time_in_millis": 1_600_000_000_000})
+    return d
+
+
+FakeClient._all_snapshots = _with_extra
+c = FakeClient()
+code, out, err = run_main(["--apply", "--yes", "--plan-file", plan_path], c)
+check("snapshot that appeared after the plan is NOT deleted", NEW_ORPHAN not in c.deleted)
+check("only the reviewed snapshots are deleted",
+      sorted(c.deleted) == sorted(TRUE_ORPHANS), str(c.deleted))
+check("the new arrival is reported to the operator", NEW_ORPHAN in err)
+FakeClient._all_snapshots = _orig
+
+# A plan built for another cluster must be rejected outright.
+plan["cluster"] = "some-other-cluster"
+_json.dump(plan, open(plan_path, "w"))
+c = FakeClient()
+code, out, err = run_main(["--apply", "--yes", "--plan-file", plan_path], c)
+check("plan from a different cluster is rejected", code != 0, f"exit={code}")
+check("nothing deleted from a mismatched plan", c.deleted == [])
+
+print()
+print("=== J. --max-delete caps the blast radius ===")
+c = FakeClient()
+code, out, err = run_main(["--apply", "--yes", "--max-delete", "1"], c)
+check("run aborted when selection exceeds the cap", code != 0, f"exit={code}")
+check("nothing deleted", c.deleted == [], str(c.deleted))
+c = FakeClient()
+code, out, err = run_main(["--apply", "--yes", "--max-delete", "5"], c)
+check("run proceeds when within the cap", sorted(c.deleted) == sorted(TRUE_ORPHANS))
+
+print()
+print("=== K. Audit file survives a crash mid-delete ===")
+audit_path = os.path.join(tempfile.mkdtemp(), "audit.txt")
+
+
+class ExplodingClient(FakeClient):
+    def delete(self, path, timeout=None):
+        raise RuntimeError("connection reset mid-delete")
+
+
+c = ExplodingClient()
+try:
+    run_main(["--apply", "--yes", "--audit-file", audit_path], c)
+except RuntimeError:
+    pass
+check("audit file exists despite the crash", os.path.exists(audit_path))
+body = open(audit_path).read() if os.path.exists(audit_path) else ""
+check("audit records the full attempted set",
+      all(s in body for s in TRUE_ORPHANS), f"{len(body)} bytes")
+check("audit is stamped with the tool version", "Tool version" in body)
 
 print()
 print("=" * 62)

@@ -119,6 +119,21 @@ empty result (an empty in-use set would read as "nothing references this snapsho
 calls return *unknown*, and every guard treats unknown as **blocking `--apply`** — never as
 "clear". Dry-runs still complete.
 
+**Plan, review, apply.** `--apply` on its own re-scans, so it can delete a different set than
+the one you reviewed. `--plan-file` records the selection; applying it deletes **only** those
+snapshots (safety checks still run and can only remove more), and anything that appeared since
+is reported and skipped:
+
+```bash
+./orphaned_searchable_snapshots.py --cluster dev --plan-file dev_plan.json --audit-file dev_audit.txt
+# ...review...
+./orphaned_searchable_snapshots.py --cluster dev --apply --plan-file dev_plan.json
+```
+
+`--apply` requires typed confirmation of the cluster name (`--yes` for automation), honours
+`--max-delete N`, and writes the audit file **before** deleting so a crash still leaves a
+record.
+
 **Regression tests** (offline, no cluster needed):
 
 ```bash

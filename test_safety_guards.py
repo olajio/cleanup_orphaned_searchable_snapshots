@@ -320,3 +320,50 @@ if fails:
     print(f"{len(fails)} CHECK(S) FAILED: {fails}")
     sys.exit(1)
 print(f"ALL CHECKS PASSED")
+
+print()
+print("=== 13. Corrected ILM policies never rewrite the customer's own settings ===")
+
+# A delete phase can exist with the customer's retention and other actions but no
+# `delete` action yet. Rebuilding the phase would silently change retention -- and
+# these files are meant to be applied as-is.
+p = {"delete": {"min_age": "90d", "actions": {"wait_for_snapshot": {"policy": "nightly"}}}}
+body, note = oss.build_corrected_policy(p)
+d = body["policy"]["phases"]["delete"]
+check("customer min_age preserved", d["min_age"] == "90d", str(d.get("min_age")))
+check("existing actions preserved", "wait_for_snapshot" in d["actions"], str(list(d["actions"])))
+check("delete action added", d["actions"]["delete"]["delete_searchable_snapshot"] is True)
+check("note says what was kept", "kept min_age" in note and "wait_for_snapshot" in note, note)
+
+p = {"delete": {"min_age": "30d", "actions": {"delete": {"delete_searchable_snapshot": False}}}}
+d = oss.build_corrected_policy(p)[0]["policy"]["phases"]["delete"]
+check("dss:false flipped to true", d["actions"]["delete"]["delete_searchable_snapshot"] is True)
+check("min_age untouched when flipping", d["min_age"] == "30d")
+
+p = {"frozen": {"actions": {"searchable_snapshot": {}}}}
+body, note = oss.build_corrected_policy(p)
+check("delete phase added when absent",
+      body["policy"]["phases"]["delete"]["actions"]["delete"]["delete_searchable_snapshot"] is True)
+check("placeholder retention flagged for review", "REVIEW" in note, note)
+check("caller's phases not mutated", "delete" not in p)
+
+d = oss.build_corrected_policy({"delete": {}})[0]["policy"]["phases"]["delete"]
+check("empty delete phase handled", d["actions"]["delete"]["delete_searchable_snapshot"] is True)
+check("no min_age invented where none existed", "min_age" not in d, str(d))
+
+print()
+print("=== 14. Ages are computed in UTC, not local time ===")
+import datetime as _dt
+
+check("utc_today matches UTC, not the local date",
+      oss.utc_today() == _dt.datetime.now(_dt.timezone.utc).date())
+now_ms = int(_dt.datetime.now(_dt.timezone.utc).timestamp() * 1000)
+check("a snapshot taken right now is 0 days old (never negative)",
+      oss.snapshot_age_days({"name": "x", "start_ms": now_ms}) == 0)
+
+print()
+print("=" * 60)
+if fails:
+    print(f"{len(fails)} CHECK(S) FAILED: {fails}")
+    sys.exit(1)
+print("ALL CHECKS PASSED")

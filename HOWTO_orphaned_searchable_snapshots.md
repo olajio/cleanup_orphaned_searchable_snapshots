@@ -190,6 +190,9 @@ at the cost of the slower `_status` scan.
 | `--incremental` | off | With `--report-size`, also compute the dedup-aware reclaimable size via `_status` (slower). Implies `--report-size` |
 | `--check-ilm` | off | Also flag ILM policies that create searchable snapshots but won't let ILM delete them (source of future orphans) |
 | `--apply` | off | **Delete** the orphans (without it, dry-run) |
+| `--plan-file PATH` | — | Without `--apply`: write the selected snapshots to JSON for review. With `--apply`: delete **only** what is in that file. Ties the reviewed list to the deleted list |
+| `--yes` | off | Skip the interactive confirmation before `--apply` (**required** for non-interactive runs) |
+| `--max-delete N` | — | **Safety.** Refuse to delete more than N snapshots in one run |
 | `--min-snapshot-age-days N` | `14` | **Safety.** Never treat a snapshot younger than this as an orphan. `0` disables (not recommended) — see [§8](#8-performance--safety-notes) |
 | `--allow-ilm-in-flight` | off | **Safety override.** Delete even when ILM is mid-`searchable_snapshot` on an index whose snapshot is a candidate |
 | `--allow-empty-in-use` | off | **Safety override.** Allow `--apply` when the in-use scan found **zero** mounted indices (legitimate only if the cluster genuinely has none) |
@@ -482,6 +485,40 @@ object storage. Deletion is serialised by Elasticsearch anyway, so pacing costs 
 ./orphaned_searchable_snapshots.py --cluster prod --incremental \
   --batch 20 --timeout 300 --sleep 1 --retries 5
 ```
+
+### Recommended workflow: plan, review, apply
+
+`--apply` on its own **re-scans** the cluster. The set it deletes is therefore not
+necessarily the set you reviewed — ILM may have mounted or freed snapshots in between.
+`--plan-file` closes that gap:
+
+```bash
+# 1. Scan and record exactly what was selected
+./orphaned_searchable_snapshots.py --cluster dev --report-size \
+  --plan-file dev_plan.json --audit-file dev_audit.txt
+
+# 2. Review dev_audit.txt / dev_plan.json with the team
+
+# 3. Delete ONLY what is in the plan (every safety check still runs)
+./orphaned_searchable_snapshots.py --cluster dev --apply --plan-file dev_plan.json
+```
+
+The plan is an **upper bound**: safety checks can still remove entries from it, never add.
+Anything that became a candidate *after* the plan was written is reported and **skipped**. A
+plan built for a different cluster or repository is rejected outright.
+
+`--apply` also requires **typed confirmation** of the cluster/repo name. Automated runs must
+pass `--yes` (a non-interactive run without it aborts rather than deleting unattended).
+
+### Crash and interrupt safety
+
+- The `--audit-file` is written **before** deletion starts and rewritten afterwards, so a
+  crash or Ctrl-C still leaves a record of the full attempted set.
+- Ctrl-C during deletion is caught: the audit file is written and the tool tells you to
+  re-run the dry-run to see current state. Some snapshots may already be gone — deletion is
+  not transactional.
+- `--max-delete N` caps the blast radius. The tool also warns when a run would delete more
+  than half of every snapshot in the repository.
 
 ### Precondition: one cluster per repository
 
