@@ -10,10 +10,19 @@ assumed.
 
 ## 1. The one-sentence version
 
-The script asked Elasticsearch "show me every index that is using a snapshot", but the way it
-asked **silently excluded hidden indices** — and *every* data-stream index is hidden. Those
-indices were using their snapshots the whole time; the script just never saw them, concluded
-their snapshots were unused, and deleted them.
+The script asked Elasticsearch "show me every index that is using a snapshot" in a way that
+**could not see some of the indices**. Those indices were using their snapshots the whole
+time; the script just never saw them, concluded the snapshots were unused, and deleted them.
+
+### In three steps
+
+1. **The test for "orphan" was: is any index using this snapshot?** If nothing came back, the
+   snapshot was treated as a leftover and deleted.
+2. **The question was asked with `GET _all/_settings/…`.** In Elasticsearch, `_all` skips any
+   index marked `index.hidden: true`. You have to ask for those explicitly with
+   `expand_wildcards=all`.
+3. **The six indices in question were marked hidden.** They were alive and pointing at those
+   snapshots. The question simply never reached them.
 
 ---
 
@@ -53,12 +62,38 @@ The intent: "for every index, tell me which snapshot it's mounted from."
 You have to ask for them explicitly with `expand_wildcards=all`. This is the same reason
 `GET _cat/indices` doesn't show your `.ds-*` indices unless you add that parameter.
 
-**And every data-stream backing index is hidden.** All our APM, metrics, logs, and traces
-data lives in data streams. When ILM freezes one of those indices, the resulting mounted
-index (`partial-.ds-…`) inherits `index.hidden: true`.
+**And the frozen mounts backing our data streams are hidden.** Our APM, metrics, logs and
+traces data lives in data streams. When ILM freezes one of those indices, the resulting
+mounted index (`partial-.ds-…`) carries `index.hidden: true`.
 
-So the query returned only the *non*-data-stream mounts. Every frozen data-stream index was
-invisible.
+So the query returned only the mounts that were not hidden. The frozen data-stream mounts
+were invisible to it.
+
+> **Important nuance — do not judge by the name.** "Hidden" is a **per-index setting**
+> (`index.hidden`), not a naming convention. A `.ds-` prefix is just the naming convention for
+> data stream backing indices; it does **not** by itself mean an index is hidden, and on our
+> dev cluster some `.ds-*` indices are visible to plain `_all` while others are not. (An index
+> removed from its data stream, or restored under a `.ds-` name, may carry no `index.hidden`
+> at all.)
+>
+> This makes the problem **worse**, not better: you cannot predict from an index's name
+> whether a query will see it. Only the setting decides. That is precisely why tooling must
+> ask for everything rather than assume.
+>
+> Check any index with:
+> ```
+> GET <index>/_settings?flat_settings=true&filter_path=**.hidden
+> ```
+> and list every mount with its hidden flag and snapshot together:
+> ```
+> GET _all/_settings/index.hidden,index.store.snapshot.snapshot_name?expand_wildcards=all&filter_path=**.hidden,**.snapshot_name
+> ```
+
+There is one further wrinkle worth knowing: a wildcard pattern that itself **starts with a
+dot** (e.g. `.ds-*`) *does* match hidden indices whose names start with a dot — a
+backwards-compatibility rule so dot-index patterns keep working. `_all` and `*` do not start
+with a dot, so they get no such exemption. This is why `GET _cat/indices/.ds-*` and
+`GET _cat/indices/*` can return different sets.
 
 ### The proof, from the affected index
 
@@ -81,8 +116,9 @@ Elastic pulled the settings of one of the red indices. Two lines matter:
 The index was alive and actively pointing at that snapshot. The script's question just never
 reached it.
 
-**All six red indices are `partial-.ds-*`.** Every one of them hidden. Not a coincidence —
-it is the signature of the bug.
+**All six red indices are `partial-.ds-*`, and all six carry `index.hidden: true`.** Verified
+from the index settings, not inferred from the names. Not a coincidence — it is the signature
+of the bug.
 
 ### A second, smaller version of the same bug
 
@@ -205,8 +241,15 @@ now, and on qa/prod before and after any cleanup.**
 4. **Hidden indices are easy to miss.** Any tooling that enumerates indices must pass
    `expand_wildcards=all`, or it is quietly working with a partial list. This applies well
    beyond this script.
-5. **Cross-check destructive decisions against a second, independent source.** One query
+5. **You cannot tell from an index's name whether a query will see it.** Visibility comes from
+   the `index.hidden` setting, and two indices with similar names can differ. Never reason
+   about coverage from naming patterns — verify with the setting.
+6. **Cross-check destructive decisions against a second, independent source.** One query
    returning a plausible-looking number (177 mounted indices) is not verification.
+7. **An absent result is not evidence of absence.** "No index references this snapshot" was
+   treated as fact when it actually meant "my query found nothing" — which can equally mean
+   the query was wrong. For destructive actions, an empty answer deserves more scrutiny than
+   a full one.
 
 ---
 

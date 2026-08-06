@@ -77,11 +77,14 @@ cluster. The cluster stayed green for two weeks, then went red, and the data was
 unrecoverable — a snapshot *of* a mounted searchable-snapshot index stores only a pointer to
 the original snapshot, so the `cloud-snapshot-*` backups could not rebuild the indices.
 
-**Root cause:** `GET /_all/_settings/...` does **not** match **hidden** indices, and every
-data-stream backing index is hidden — including the searchable-snapshot mount that replaces
-it (`partial-.ds-*`, `restored-.ds-*`). Those live mounts were invisible to the in-use scan,
-so their snapshots looked orphaned. The default `expand_wildcards=open` hides closed indices
-the same way.
+**Root cause:** `GET /_all/_settings/...` does **not** match **hidden** indices, and the
+frozen mounts backing our data streams carry `index.hidden: true` (`partial-.ds-*`,
+`restored-.ds-*`). Those live mounts were invisible to the in-use scan, so their snapshots
+looked orphaned. The default `expand_wildcards=open` hides closed indices the same way.
+
+"Hidden" is a **per-index setting**, not a naming convention: a `.ds-` prefix does not by
+itself mean an index is hidden, and similar-looking indices can differ. Visibility is
+unpredictable from names alone — which is why the scan must ask for everything.
 
 ### Safety layers now in place
 

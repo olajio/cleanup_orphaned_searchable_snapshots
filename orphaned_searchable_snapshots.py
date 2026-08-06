@@ -42,10 +42,16 @@ goes red with SnapshotMissingException. In one run this tool deleted six live
 snapshots and the damage surfaced two weeks later.
 
 The cause was index-name expansion. `GET /_all/_settings/...` does NOT match
-hidden indices, and EVERY data-stream backing index is hidden -- including the
-searchable-snapshot mount that replaces it (partial-.ds-*, restored-.ds-*). Those
-mounts were invisible, so their live snapshots looked orphaned. The default
-expand_wildcards=open hides closed indices for the same reason.
+hidden indices, and the frozen mounts backing data streams carry index.hidden:true
+(partial-.ds-*, restored-.ds-*). Those mounts were invisible, so their live
+snapshots looked orphaned. The default expand_wildcards=open hides closed indices
+for the same reason.
+
+Note that "hidden" is a PER-INDEX SETTING, not a naming convention: a .ds- prefix
+does not by itself mean an index is hidden, and similar-looking indices can differ
+(an index removed from its data stream may carry no index.hidden at all). You
+cannot predict from a name whether a query will see an index -- which is exactly
+why the in-use scan has to ask for everything rather than assume.
 
 Guards now in place:
   * expand_wildcards=all on the settings query (hidden + closed included), plus a

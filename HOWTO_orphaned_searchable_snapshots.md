@@ -411,10 +411,16 @@ the cluster stays green until a shard relocates or a node restarts — potential
 later — and then goes red with `SnapshotMissingException`.
 
 That is exactly what happened in **July 2026**: `GET /_all/_settings/...` does **not** match
-**hidden** indices, and every data-stream backing index is hidden — including the
-searchable-snapshot mount that replaces it (`partial-.ds-*`, `restored-.ds-*`). Those live
-mounts were invisible, their snapshots looked orphaned, and six were deleted. The cluster
-went red two weeks later and the data was unrecoverable.
+**hidden** indices, and the frozen mounts backing our data streams carry
+`index.hidden: true` (`partial-.ds-*`, `restored-.ds-*`). Those live mounts were invisible,
+their snapshots looked orphaned, and six were deleted. The cluster went red two weeks later
+and the data was unrecoverable.
+
+Note that "hidden" is a **per-index setting**, not a naming convention — a `.ds-` prefix does
+not by itself mean an index is hidden, and similar-looking indices can differ. You cannot
+predict from a name whether a query will see an index, which is exactly why the in-use scan
+must ask for everything. Check with
+`GET <index>/_settings?flat_settings=true&filter_path=**.hidden`.
 
 ### The safety layers (in order)
 
