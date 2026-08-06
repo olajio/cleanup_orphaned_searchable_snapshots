@@ -353,16 +353,19 @@ def _refs_from_settings(es, repo):
     refs = {}
     for index, body in (data or {}).items():
         s = (body or {}).get("settings", {})
-        if s.get("index.store.snapshot.repository_name") != repo:
-            continue
         name = s.get("index.store.snapshot.snapshot_name")
-        if name:
-            refs[index] = name
+        if not name:
+            continue
+        refs[index] = {
+            "snapshot": name,
+            "repo_name": s.get("index.store.snapshot.repository_name"),
+            "repo_uuid": s.get("index.store.snapshot.repository_uuid"),
+        }
     return refs
 
 
 def _refs_from_cluster_state(es, repo):
-    """index -> snapshot_name, read from the cluster state metadata.
+    """index -> {snapshot, repo_name, repo_uuid}, read from the cluster state metadata.
 
     Independent cross-check: the cluster state enumerates index metadata directly,
     so it is immune to the hidden/closed wildcard-expansion rules that made the Get
@@ -378,11 +381,14 @@ def _refs_from_cluster_state(es, repo):
     for index, body in indices.items():
         snap = ((((body or {}).get("settings") or {}).get("index")
                  or {}).get("store") or {}).get("snapshot") or {}
-        if snap.get("repository_name") != repo:
-            continue
         name = snap.get("snapshot_name")
-        if name:
-            refs[index] = name
+        if not name:
+            continue
+        refs[index] = {
+            "snapshot": name,
+            "repo_name": snap.get("repository_name"),
+            "repo_uuid": snap.get("repository_uuid"),
+        }
     return refs
 
 
@@ -391,28 +397,69 @@ def collect_in_use(es, repo):
 
     Returns (in_use:set, info:dict). `info` records what each source saw so the
     caller can report -- and refuse to act on -- a disagreement between them.
+
+    Repository matching is by NAME *or* UUID. The same object-store bucket can be
+    registered under more than one repository name; a mount recorded against the
+    other name points at the very same blobs, so name-only matching would classify
+    its live snapshot as an orphan.
     """
     settings_refs = _refs_from_settings(es, repo)
     state_refs = _refs_from_cluster_state(es, repo)
 
-    in_use = set(settings_refs.values())
+    # Any repository UUID seen behind the target repo name is the same bucket.
+    all_refs = dict(settings_refs)
+    if state_refs:
+        all_refs.update(state_refs)
+    repo_uuids = {r["repo_uuid"] for r in all_refs.values()
+                  if r["repo_name"] == repo and r["repo_uuid"]}
+
+    def matches(r):
+        return r["repo_name"] == repo or (r["repo_uuid"] and r["repo_uuid"] in repo_uuids)
+
+    def snaps(refs):
+        return {r["snapshot"] for r in refs.values() if matches(r)}
+
+    in_use = snaps(settings_refs)
+    aliased = sorted({i for i, r in all_refs.items()
+                      if r["repo_name"] != repo and matches(r)})
     info = {
-        "settings_indices": len(settings_refs),
-        "settings_snapshots": len(set(settings_refs.values())),
+        "settings_indices": len([r for r in settings_refs.values() if matches(r)]),
         "cluster_state_available": state_refs is not None,
-        "cluster_state_indices": len(state_refs) if state_refs is not None else None,
+        "cluster_state_indices": (len([r for r in state_refs.values() if matches(r)])
+                                  if state_refs is not None else None),
         "only_in_cluster_state": [],
+        "alias_repo_indices": aliased,
     }
     if state_refs is not None:
         # Union, never intersect: a reference seen by EITHER source means the
         # snapshot is live. Anything only the cluster state saw is a bug in the
         # settings query (this is exactly how hidden data-stream mounts were missed).
-        missed = {i: s for i, s in state_refs.items() if s not in in_use}
+        state_snaps = snaps(state_refs)
+        missed = {i: r["snapshot"] for i, r in state_refs.items()
+                  if matches(r) and r["snapshot"] not in in_use}
         info["only_in_cluster_state"] = sorted(missed.items())
-        in_use |= set(state_refs.values())
-        info["cluster_state_snapshots"] = len(set(state_refs.values()))
+        in_use |= state_snaps
     info["total"] = len(in_use)
     return in_use, info
+
+
+def in_progress_repo_operations(es, repo):
+    """(snapshots_running, restores_running) for the repository.
+
+    Deleting from a repository while a snapshot or restore is running against it can
+    fail or interfere with the running operation, and a restore in flight references
+    blobs that no mounted index points at yet.
+    """
+    running = es.get_optional(f"/_snapshot/{repo}/_current?ignore_unavailable=true") or {}
+    snaps = len(running.get("snapshots") or [])
+    rec = es.get_optional("/_recovery?active_only=true&expand_wildcards=all"
+                          "&filter_path=*.shards.type") or {}
+    restores = 0
+    for body in rec.values():
+        for shard in (body or {}).get("shards") or []:
+            if (shard or {}).get("type") == "SNAPSHOT":
+                restores += 1
+    return snaps, restores
 
 
 def ilm_indices_in_flight(es):
@@ -927,6 +974,14 @@ def main():
 
     mode = "APPLY (delete)" if args.apply else "DRY-RUN"
     sys.stderr.write(f"Repo    : {args.repo}\nPattern : {args.pattern}\nMode    : {mode}\n")
+    # ORDER MATTERS. List the repository FIRST, then read the in-use set. ILM mounts
+    # new searchable snapshots continuously; with the opposite order a snapshot created
+    # AND mounted between the two calls appears in the repository listing but not in the
+    # in-use set -- a false orphan. This way such a snapshot is simply not a candidate.
+    sys.stderr.write(f"Listing all snapshots in {args.repo}...\n")
+    all_snaps = list_all_snapshots(es, args.repo)
+    sys.stderr.write(f"  total snapshots : {len(all_snaps)}\n")
+
     sys.stderr.write("Collecting in-use snapshots from mounted indices...\n")
     in_use, in_use_info = collect_in_use(es, args.repo)
     sys.stderr.write(f"  in-use snapshots: {len(in_use)}  "
@@ -946,10 +1001,10 @@ def main():
         for idx, snap in in_use_info["only_in_cluster_state"][:10]:
             sys.stderr.write(f"           {idx} -> {snap}\n")
         sys.stderr.write("           They have been counted as in-use. Investigate before deleting.\n")
-
-    sys.stderr.write(f"Listing all snapshots in {args.repo}...\n")
-    all_snaps = list_all_snapshots(es, args.repo)
-    sys.stderr.write(f"  total snapshots : {len(all_snaps)}\n")
+    if in_use_info["alias_repo_indices"]:
+        sys.stderr.write(f"  NOTE: {len(in_use_info['alias_repo_indices'])} mounted index/indices name a "
+                         "DIFFERENT repository that resolves to the same\n"
+                         "        repository UUID (same bucket). Counted as in-use.\n")
 
     # SLM-managed snapshots (metadata.policy set) are retired by SLM's own retention,
     # so they are never orphans -- exclude them from the candidate set.
@@ -1006,6 +1061,24 @@ def main():
             orphans = [s for s in orphans if s not in set(conflicts)]
             sys.stderr.write("          Excluded (pass --allow-ilm-in-flight to keep them).\n")
 
+    # 4. Plausibility guard. If the in-use scan came back empty (or near-empty) while the
+    #    repository is full of ILM-style searchable snapshots, the scan is far more likely
+    #    to be broken than the cluster to be genuinely unmounted. That is precisely the
+    #    shape of the hidden-index bug, so refuse to delete on it.
+    implausible = (not in_use) and len(orphans) > 0
+    if implausible:
+        sys.stderr.write("  SAFETY: the in-use scan found ZERO mounted searchable-snapshot indices\n"
+                         f"          while {len(orphans)} candidate orphan(s) exist. That usually means the\n"
+                         "          scan is failing, not that nothing is mounted.\n")
+
+    # 5. Concurrent repository activity. A running snapshot or an in-flight restore
+    #    references blobs that no mounted index points at yet.
+    running_snaps, running_restores = in_progress_repo_operations(es, args.repo)
+    if running_snaps or running_restores:
+        sys.stderr.write(f"  SAFETY: repository activity in progress -- {running_snaps} snapshot(s) "
+                         f"running, {running_restores} shard(s) recovering from snapshot.\n")
+    report_activity = {"snapshots_running": running_snaps, "restores_running": running_restores}
+
     if unfinished or too_young or conflicts:
         sys.stderr.write(f"  orphans after safety filters: {len(orphans)}\n")
 
@@ -1019,7 +1092,9 @@ def main():
             "cluster_state_available": in_use_info["cluster_state_available"],
             "cluster_state_indices": in_use_info["cluster_state_indices"],
             "only_in_cluster_state": [i for i, _ in in_use_info["only_in_cluster_state"]],
+            "alias_repo_indices": in_use_info["alias_repo_indices"],
         },
+        "repo_activity": report_activity,
         "slm_managed_excluded": len(slm_managed),
         "safety_excluded": {
             "not_success": unfinished,
@@ -1147,6 +1222,24 @@ def main():
 
     # Optional: delete the orphans.
     if args.apply:
+        # Hard blocks: conditions under which a delete is not safe to attempt at all.
+        if implausible:
+            sys.exit("ERROR: refusing to delete -- the in-use scan found zero mounted "
+                     "searchable-snapshot indices. Verify with\n"
+                     "  GET _cluster/state/metadata?filter_path=metadata.indices.*.settings.index.store.snapshot\n"
+                     "before re-running.")
+        if not in_use_info["cluster_state_available"]:
+            sys.exit("ERROR: refusing to delete -- the cluster-state cross-check is unavailable, "
+                     "so the in-use set cannot be independently verified. Grant the API key the "
+                     "'monitor' cluster privilege and re-run.")
+        if in_use_info["only_in_cluster_state"]:
+            sys.exit("ERROR: refusing to delete -- indices were visible only in the cluster state, "
+                     "meaning the settings query is under-resolving. Investigate before deleting.")
+        if running_snaps or running_restores:
+            sys.exit(f"ERROR: refusing to delete -- repository activity in progress "
+                     f"({running_snaps} snapshot(s), {running_restores} restore shard(s)). "
+                     "Wait for it to finish and re-run.")
+
         # Final guard: re-read the in-use set immediately before deleting. Sizing and
         # ILM analysis can take a long time on a big repo, and ILM keeps mounting new
         # searchable snapshots while we work -- a candidate may have become live since

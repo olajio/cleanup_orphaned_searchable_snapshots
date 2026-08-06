@@ -95,10 +95,33 @@ the same way.
 | Pre-delete re-check | The in-use set is re-read immediately before deleting. If it **shrank** during the run, the delete **aborts**. |
 | Post-delete health check | Reports cluster health afterwards — with the reminder that green now proves nothing. |
 
+Plus: repositories matched by **UUID as well as name** (one bucket, two registrations); the
+repository listed **before** the in-use read (so a snapshot mounted mid-run can't become a
+candidate); `--apply` blocked while a snapshot or restore is running, when the cluster-state
+cross-check is unavailable, or when the in-use scan returns implausibly empty.
+
 Everything held back is listed in the `--audit-file` under **HELD BACK BY SAFETY FILTERS**.
 
 > **After any `--apply`,** re-check `GET _cluster/health` following the next node restart or
 > shard relocation. Green immediately after the delete is **not** evidence the delete was safe.
+
+**Full write-up:** [`INCIDENT_why_live_snapshots_were_deleted.md`](INCIDENT_why_live_snapshots_were_deleted.md)
+— team-shareable, no prior context needed.
+
+### Check whether anything is already broken
+
+Breakage is silent, so cluster health does not tell you how many indices are damaged. This
+read-only tool compares every mounted index against the snapshots actually present:
+
+```bash
+./find_broken_searchable_snapshots.py --cluster dev
+```
+
+Anything it reports will fail on its next shard start. Run it before **and** after any cleanup.
+
+> **SLM backups will not save you here.** A snapshot of a mounted searchable-snapshot index
+> stores only a *pointer* to the original snapshot, not the data. If the searchable snapshot
+> is gone, the `cloud-snapshot-*` backups cannot rebuild the index.
 
 ---
 
@@ -107,6 +130,8 @@ Everything held back is listed in the `--audit-file` under **HELD BACK BY SAFETY
 | Path | Purpose |
 |------|---------|
 | `orphaned_searchable_snapshots.py` | The main tool — find, size, delete orphans, flag culprit ILM policies, and estimate reclaimable storage, against a live cluster. |
+| `find_broken_searchable_snapshots.py` | Read-only check: mounted indices whose backing snapshot is **missing** — i.e. already broken, red or not yet. |
+| `INCIDENT_why_live_snapshots_were_deleted.md` | Shareable write-up of the July 2026 incident: why live snapshots were mistaken for orphans, and every fix made. |
 | `HOWTO_orphaned_searchable_snapshots.md` | Detailed usage guide (options, recipes, troubleshooting). |
 | `analyze_ilm.py` | Offline auditor — parses exported `GET _ilm/policy` JSON files and flags leaking policies. |
 | `corrected_ilm_policies/` | Ready-to-apply `PUT _ilm/policy` bodies that add a delete phase to the leaking policies. |
