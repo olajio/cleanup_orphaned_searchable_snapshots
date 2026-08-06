@@ -190,6 +190,9 @@ at the cost of the slower `_status` scan.
 | `--incremental` | off | With `--report-size`, also compute the dedup-aware reclaimable size via `_status` (slower). Implies `--report-size` |
 | `--check-ilm` | off | Also flag ILM policies that create searchable snapshots but won't let ILM delete them (source of future orphans) |
 | `--apply` | off | **Delete** the orphans (without it, dry-run) |
+| `--min-snapshot-age-days N` | `14` | **Safety.** Never treat a snapshot younger than this as an orphan. `0` disables (not recommended) — see [§8](#8-performance--safety-notes) |
+| `--allow-ilm-in-flight` | off | **Safety override.** Delete even when ILM is mid-`searchable_snapshot` on an index whose snapshot is a candidate |
+| `--skip-recheck` | off | **Safety override.** Skip re-reading the in-use set immediately before deleting |
 | `--batch N` | `50` | Max snapshots per request (also bounded by URL length) |
 | `--timeout N` | `120` | Per-request read timeout in seconds |
 | `--retries N` | `3` | Retries with backoff on read timeouts / `429` / `5xx` |
@@ -393,6 +396,46 @@ policies already fixed) are not attributed to any policy here. Requires the API 
 - Deletion is irreversible. The tool only deletes snapshots that are **not referenced by
   any mounted index** — but a dry-run review is still recommended before `--apply`.
 
+### Why deletion is more dangerous than it looks
+
+For a **frozen** index the snapshot **is** the data — the node keeps only a cache. Delete the
+snapshot a mounted index references and that index is destroyed, **and nothing fails at the
+time.** Elasticsearch reads the repository only when a shard starts or on a cache miss, so
+the cluster stays green until a shard relocates or a node restarts — potentially **weeks**
+later — and then goes red with `SnapshotMissingException`.
+
+That is exactly what happened in **July 2026**: `GET /_all/_settings/...` does **not** match
+**hidden** indices, and every data-stream backing index is hidden — including the
+searchable-snapshot mount that replaces it (`partial-.ds-*`, `restored-.ds-*`). Those live
+mounts were invisible, their snapshots looked orphaned, and six were deleted. The cluster
+went red two weeks later and the data was unrecoverable.
+
+### The safety layers (in order)
+
+1. **`expand_wildcards=all`** on the in-use query — includes **hidden** and **closed**
+   indices. This is the primary fix.
+2. **Cluster-state cross-check** — the in-use set is also read from
+   `_cluster/state/metadata`, which involves no wildcard expansion at all. The two sources
+   are **unioned**, and any index seen only by the cluster state is reported as a loud
+   warning (it would mean the settings query is under-resolving again).
+3. **`--min-snapshot-age-days` (default 14)** — ILM creates the snapshot, *then* mounts it,
+   *then* deletes the source index. In that window the snapshot has no referencing index and
+   is indistinguishable from an orphan. Snapshots of unknown age are also held back.
+4. **State check** — snapshots not in state `SUCCESS` are still being written; skipped.
+5. **ILM in-flight check** — indices currently in the `searchable_snapshot` action are
+   detected and their snapshots held back (`--allow-ilm-in-flight` overrides).
+6. **Pre-delete re-check** — the in-use set is re-read immediately before deleting, since
+   sizing and ILM analysis can take a long time while ILM keeps mounting new snapshots. If
+   the in-use set **shrank** during the run, the delete **aborts**.
+7. **Post-delete health check** — cluster health is reported afterwards, with a reminder
+   that breakage may not surface until the next restart.
+
+Every held-back snapshot is listed in the `--audit-file` under **HELD BACK BY SAFETY
+FILTERS**, so nothing is silently dropped.
+
+> **After any `--apply`,** re-check `GET _cluster/health` following the next node restart or
+> shard relocation. Green immediately after the delete does **not** prove the delete was safe.
+
 ---
 
 ## 9. Troubleshooting
@@ -410,6 +453,10 @@ policies already fixed) are not attributed to any policy here. Requires the API 
 | `HTTP 401` / `403` | API key invalid or lacks privileges — `monitor` + `view_index_metadata` (and `manage` for `--apply`). |
 | `HTTP 404` on `_snapshot/...` | Wrong repository name — set `--repo`. |
 | Runs slowly / affects the cluster | Lower `--batch`, scope with `--pattern`, or run off-peak. |
+| `WARNING: ... visible ONLY in the cluster state` | The Get Settings query is under-resolving (hidden/closed indices). They were counted as in-use, but **do not `--apply`** until you understand why. |
+| `WARNING: could not read the cluster state to cross-check` | API key lacks the `monitor` cluster privilege. The cross-check is skipped — grant `monitor` before deleting. |
+| `ERROR: aborting --apply because the in-use set shrank mid-run` | Indices were closing/deleting while the tool ran. Re-run the scan and review before deleting. |
+| Cluster goes **red** with `SnapshotMissingException` after a cleanup | A live snapshot was deleted. Recover per the Elastic runbook: remove the broken backing index from the data stream, delete it, clone a `cloud-snapshot-*` that still contains it, re-`_mount` with `storage=shared_cache`, move ILM to `frozen/complete`, then re-add to the data stream. If no backup predates the deletion, the data is lost and the index must be deleted. |
 
 ---
 

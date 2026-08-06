@@ -58,7 +58,47 @@ A snapshot is an orphan when **all** of these hold:
 
 - it lives in the snapshot repository, **and**
 - it is **not referenced by any mounted** searchable-snapshot index (its index is gone), **and**
-- it is **not managed by SLM** (no `metadata.policy`) — SLM retires its own snapshots.
+- it is **not managed by SLM** (no `metadata.policy`) — SLM retires its own snapshots, **and**
+- it clears the [safety filters](#deleting-is-irreversible-and-fails-silently) (old enough,
+  finished, not mid-ILM).
+
+---
+
+## ⚠️ Deleting is irreversible — and fails silently
+
+For a **frozen** index the snapshot **is** the data; the node holds only a cache. Delete the
+snapshot a mounted index references and that index is destroyed — **but nothing fails at the
+time.** Elasticsearch reads the repository only when a shard starts or on a cache miss, so
+the cluster stays green until a shard relocates or a node restarts, which can be **weeks**
+later, and only then goes red with `SnapshotMissingException`.
+
+**This is not hypothetical.** In July 2026 this tool deleted six live snapshots on a dev
+cluster. The cluster stayed green for two weeks, then went red, and the data was
+unrecoverable — a snapshot *of* a mounted searchable-snapshot index stores only a pointer to
+the original snapshot, so the `cloud-snapshot-*` backups could not rebuild the indices.
+
+**Root cause:** `GET /_all/_settings/...` does **not** match **hidden** indices, and every
+data-stream backing index is hidden — including the searchable-snapshot mount that replaces
+it (`partial-.ds-*`, `restored-.ds-*`). Those live mounts were invisible to the in-use scan,
+so their snapshots looked orphaned. The default `expand_wildcards=open` hides closed indices
+the same way.
+
+### Safety layers now in place
+
+| Layer | What it does |
+|-------|--------------|
+| `expand_wildcards=all` | The in-use query now matches **hidden** and **closed** indices. Primary fix. |
+| Cluster-state cross-check | In-use is also read from `_cluster/state/metadata` (no wildcard expansion at all). The sources are **unioned**; a disagreement is reported as a loud warning. |
+| `--min-snapshot-age-days` (default **14**) | ILM creates a snapshot, *then* mounts it, *then* deletes the source index — in that window it looks exactly like an orphan. Snapshots of unknown age are held back too. |
+| Snapshot state check | Snapshots not in state `SUCCESS` are still being written; skipped. |
+| ILM in-flight check | Indices currently in the `searchable_snapshot` action have their snapshots held back (`--allow-ilm-in-flight` overrides). |
+| Pre-delete re-check | The in-use set is re-read immediately before deleting. If it **shrank** during the run, the delete **aborts**. |
+| Post-delete health check | Reports cluster health afterwards — with the reminder that green now proves nothing. |
+
+Everything held back is listed in the `--audit-file` under **HELD BACK BY SAFETY FILTERS**.
+
+> **After any `--apply`,** re-check `GET _cluster/health` following the next node restart or
+> shard relocation. Green immediately after the delete is **not** evidence the delete was safe.
 
 ---
 
@@ -115,8 +155,9 @@ is **API key only**.
 - **SLM-aware** — excludes SLM-managed snapshots from the orphan set.
 - **Audit records** (`--audit-file`) — full orphan list + summary/analysis to a text file
   (screen still shows the top 25).
-- **Safe deletion** (`--apply`) — dry-run by default; requests batched under the ES HTTP
-  request-line limit and retried with backoff on timeouts / `429` / `5xx`.
+- **Safe deletion** (`--apply`) — dry-run by default, behind the
+  [safety layers above](#deleting-is-irreversible--and-fails-silently); requests batched under
+  the ES HTTP request-line limit and retried with backoff on timeouts / `429` / `5xx`.
 
 ---
 
@@ -211,7 +252,15 @@ ES_URL=... ES_API_KEY=... ./orphaned_searchable_snapshots.py --report-size
 ./orphaned_searchable_snapshots.py --cluster dev --apply --audit-file dev_deleted.txt
 # delete only 2023 orphans
 ./orphaned_searchable_snapshots.py --cluster dev --pattern '2023.*' --apply
+# be stricter than the 14-day default on a busy cluster
+./orphaned_searchable_snapshots.py --cluster dev --min-snapshot-age-days 30 --apply
 ```
+
+### API-key privileges for the safety checks
+
+The cluster-state cross-check needs the `monitor` **cluster** privilege. Without it the tool
+still runs, but prints `cluster state: UNAVAILABLE` and falls back to the settings query
+alone — grant `monitor` before using `--apply`.
 
 Run `./orphaned_searchable_snapshots.py --help` for the complete flag list.
 

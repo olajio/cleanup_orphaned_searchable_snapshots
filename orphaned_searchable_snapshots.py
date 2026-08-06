@@ -20,15 +20,46 @@ Single tool for the whole workflow:
 How it works
 ------------
 1. Collect the set of snapshots currently IN USE, from the settings of mounted
-   searchable-snapshot indices (index.store.snapshot.snapshot_name).
-2. List every snapshot in the repository.
+   searchable-snapshot indices (index.store.snapshot.snapshot_name), resolved with
+   expand_wildcards=all and cross-checked against the cluster state.
+2. List every snapshot in the repository (with its state and start time).
 3. Orphans = all snapshots - in-use snapshots - SLM-managed snapshots (those whose
-   metadata.policy names an SLM policy), optionally filtered by --pattern.
+   metadata.policy names an SLM policy), optionally filtered by --pattern, then
+   narrowed by the safety filters below.
 4. --report-size: sum the orphans' storage. By default this uses the Get Snapshot
    API's index_details (snapshot metadata) for the total logical size -- fast and
    safe on large repos. Add --incremental for the dedup-aware "reclaimable" size
    from the _status API (slower/heavier; --incremental implies --report-size).
-5. --apply: delete the orphans.
+5. --apply: re-check the in-use set, then delete the orphans.
+
+Why the safety filters exist (incident, 2026-07)
+------------------------------------------------
+A frozen index keeps no full local copy of its data -- the snapshot IS the data.
+Deleting the snapshot a mounted index references destroys that index, and it does
+so SILENTLY: Elasticsearch only reads the repository on shard start or a cache
+miss, so the cluster stays green until a shard relocates or a node restarts, then
+goes red with SnapshotMissingException. In one run this tool deleted six live
+snapshots and the damage surfaced two weeks later.
+
+The cause was index-name expansion. `GET /_all/_settings/...` does NOT match
+hidden indices, and EVERY data-stream backing index is hidden -- including the
+searchable-snapshot mount that replaces it (partial-.ds-*, restored-.ds-*). Those
+mounts were invisible, so their live snapshots looked orphaned. The default
+expand_wildcards=open hides closed indices for the same reason.
+
+Guards now in place:
+  * expand_wildcards=all on the settings query (hidden + closed included), plus a
+    cluster-state cross-check that involves no wildcard expansion at all.
+  * --min-snapshot-age-days (default 14): ILM creates a snapshot, then mounts it,
+    then deletes the source index. Between the first two steps the snapshot has no
+    referencing index. Young snapshots are never orphans in practice.
+  * snapshots not in state SUCCESS are skipped (still being written).
+  * indices ILM is mid-searchable_snapshot on are detected and their snapshots held
+    back (--allow-ilm-in-flight to override).
+  * the in-use set is re-read immediately before the delete (--skip-recheck to
+    override), and the run aborts if that set shrank during the scan.
+  * cluster health is reported after the delete, with a reminder that breakage can
+    take weeks to appear.
 
 Why not always use _status? The _status API reads every shard's file listing from
 the repository (object storage) and is very slow on large repos -- on the QA repo it
@@ -276,29 +307,165 @@ class ESClient:
     def delete(self, path):
         return self._request("DELETE", path)
 
+    def get_optional(self, path):
+        """GET that returns None instead of exiting when the call is rejected.
+
+        Used for the cross-check / advisory calls (cluster state, ILM explain) so a
+        missing privilege degrades to a warning rather than killing the run.
+        """
+        req = urllib.request.Request(self.base + path, headers=self.headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, context=self.ctx, timeout=self.timeout) as resp:
+                body = resp.read().decode()
+                return json.loads(body) if body else {}
+        except Exception:
+            return None
+
+
+# ---------------------------------------------------------------------------
+# In-use (mounted) snapshot detection
+#
+# CRITICAL CORRECTNESS NOTE -- read before changing anything here.
+#
+# For a frozen/cold index the snapshot IS the data: deleting the snapshot that a
+# mounted index references destroys that index permanently. So the "in use" set
+# must be COMPLETE; any index we fail to see turns its live snapshot into a false
+# orphan.
+#
+# Elasticsearch's index-name expansion hides two whole classes of index by default:
+#   * HIDDEN indices -- every data-stream backing index sets index.hidden: true,
+#     and so does the searchable-snapshot mount that replaces it
+#     (partial-.ds-*, restored-.ds-*). `_all` and `*` DO NOT match hidden indices
+#     unless expand_wildcards includes "hidden".
+#   * CLOSED indices -- the default expand_wildcards=open skips them, yet a closed
+#     mounted index still references its snapshot.
+#
+# Both are resolved by passing expand_wildcards=all. As a second line of defence
+# the set is cross-checked against the cluster state, which lists index metadata
+# directly and involves no wildcard expansion at all.
+# ---------------------------------------------------------------------------
+
+def _refs_from_settings(es, repo):
+    """index -> snapshot_name, via the Get Settings API (expand_wildcards=all)."""
+    data = es.get("/_all/_settings/index.store.snapshot.*"
+                  "?flat_settings=true&expand_wildcards=all"
+                  "&ignore_unavailable=true&allow_no_indices=true")
+    refs = {}
+    for index, body in (data or {}).items():
+        s = (body or {}).get("settings", {})
+        if s.get("index.store.snapshot.repository_name") != repo:
+            continue
+        name = s.get("index.store.snapshot.snapshot_name")
+        if name:
+            refs[index] = name
+    return refs
+
+
+def _refs_from_cluster_state(es, repo):
+    """index -> snapshot_name, read from the cluster state metadata.
+
+    Independent cross-check: the cluster state enumerates index metadata directly,
+    so it is immune to the hidden/closed wildcard-expansion rules that made the Get
+    Settings call miss mounted indices. Returns None when the call is unavailable
+    (e.g. the API key lacks the privilege) so the caller can degrade to a warning.
+    """
+    data = es.get_optional("/_cluster/state/metadata"
+                           "?filter_path=metadata.indices.*.settings.index.store.snapshot")
+    if data is None:
+        return None
+    indices = ((data.get("metadata") or {}).get("indices") or {})
+    refs = {}
+    for index, body in indices.items():
+        snap = ((((body or {}).get("settings") or {}).get("index")
+                 or {}).get("store") or {}).get("snapshot") or {}
+        if snap.get("repository_name") != repo:
+            continue
+        name = snap.get("snapshot_name")
+        if name:
+            refs[index] = name
+    return refs
+
 
 def collect_in_use(es, repo):
-    """Snapshot names referenced by mounted searchable-snapshot indices."""
-    data = es.get("/_all/_settings/index.store.snapshot.*?flat_settings=true")
-    in_use = set()
-    for _index, body in data.items():
-        s = body.get("settings", {})
-        if s.get("index.store.snapshot.repository_name") == repo:
-            name = s.get("index.store.snapshot.snapshot_name")
-            if name:
-                in_use.add(name)
-    return in_use
+    """Snapshot names referenced by mounted searchable-snapshot indices.
+
+    Returns (in_use:set, info:dict). `info` records what each source saw so the
+    caller can report -- and refuse to act on -- a disagreement between them.
+    """
+    settings_refs = _refs_from_settings(es, repo)
+    state_refs = _refs_from_cluster_state(es, repo)
+
+    in_use = set(settings_refs.values())
+    info = {
+        "settings_indices": len(settings_refs),
+        "settings_snapshots": len(set(settings_refs.values())),
+        "cluster_state_available": state_refs is not None,
+        "cluster_state_indices": len(state_refs) if state_refs is not None else None,
+        "only_in_cluster_state": [],
+    }
+    if state_refs is not None:
+        # Union, never intersect: a reference seen by EITHER source means the
+        # snapshot is live. Anything only the cluster state saw is a bug in the
+        # settings query (this is exactly how hidden data-stream mounts were missed).
+        missed = {i: s for i, s in state_refs.items() if s not in in_use}
+        info["only_in_cluster_state"] = sorted(missed.items())
+        in_use |= set(state_refs.values())
+        info["cluster_state_snapshots"] = len(set(state_refs.values()))
+    info["total"] = len(in_use)
+    return in_use, info
+
+
+def ilm_indices_in_flight(es):
+    """Indices ILM currently has inside the searchable_snapshot action.
+
+    While that action runs there is a window where the snapshot already exists in
+    the repository but nothing references it yet -- it looks exactly like an orphan.
+    Returns a set of index names (empty if the call is unavailable).
+    """
+    data = es.get_optional("/*/_ilm/explain?expand_wildcards=all&only_managed=true"
+                           "&filter_path=indices.*.index,indices.*.action,indices.*.step")
+    if not data:
+        return set()
+    out = set()
+    for index, body in (data.get("indices") or {}).items():
+        if (body or {}).get("action") == "searchable_snapshot":
+            out.add((body or {}).get("index") or index)
+    return out
+
+
+def inflight_conflicts(orphans, inflight):
+    """Candidate orphans whose name embeds an index ILM is mid-snapshot on.
+
+    ILM names the snapshot it creates `<date>-<index>-<policy>-<uuid>`, so a
+    candidate containing an in-flight index name is almost certainly that action's
+    snapshot rather than a real orphan.
+    """
+    if not inflight:
+        return []
+    bases = set()
+    for idx in inflight:
+        base = idx
+        for prefix in ("partial-", "restored-"):
+            if base.startswith(prefix):
+                base = base[len(prefix):]
+        bases.add(base)
+    return sorted(s for s in orphans if any(b in s for b in bases))
 
 
 def list_all_snapshots(es, repo):
-    """Return a list of (snapshot_name, slm_policy) for every snapshot in the repo.
+    """Return a list of dicts describing every snapshot in the repo.
 
-    slm_policy is the SLM policy managing the snapshot -- taken from the snapshot's
+    Each entry: {"name", "slm", "state", "start_ms"}.
+
+    `slm` is the SLM policy managing the snapshot -- taken from the snapshot's
     metadata.policy, which Snapshot Lifecycle Management stamps onto snapshots it
     creates. It is None for snapshots not created by SLM (e.g. ILM searchable
     snapshots, manual snapshots). SLM-managed snapshots (e.g. the periodic
     cloud-snapshot-* backups) are retired by SLM's own retention, so they are NOT
     orphans even though no mounted index references them.
+
+    `state` and `start_ms` drive the safety guards: a snapshot that is not SUCCESS
+    is still being written, and a very young snapshot may be an ILM mount in flight.
     """
     data = es.get(f"/_snapshot/{repo}/_all?ignore_unavailable=true")
     out = []
@@ -306,8 +473,12 @@ def list_all_snapshots(es, repo):
         name = snap.get("snapshot")
         if not name:
             continue
-        slm = (snap.get("metadata") or {}).get("policy")
-        out.append((name, slm))
+        out.append({
+            "name": name,
+            "slm": (snap.get("metadata") or {}).get("policy"),
+            "state": snap.get("state"),
+            "start_ms": snap.get("start_time_in_millis"),
+        })
     return out
 
 
@@ -519,6 +690,24 @@ def _snapshot_date(name):
         return None
 
 
+def snapshot_age_days(entry, today=None):
+    """Age of a snapshot in days, or None when it cannot be determined.
+
+    Prefers the repository's own start_time_in_millis; falls back to the leading
+    YYYY.MM.DD that ILM puts in the snapshot name.
+    """
+    today = today or datetime.date.today()
+    start_ms = entry.get("start_ms")
+    if start_ms:
+        try:
+            d = datetime.datetime.utcfromtimestamp(start_ms / 1000.0).date()
+            return (today - d).days
+        except (OverflowError, OSError, ValueError):
+            pass
+    d = _snapshot_date(entry["name"])
+    return (today - d).days if d else None
+
+
 def _modified_date(iso):
     """Parse an ILM modified_date (e.g. 2023-06-21T13:14:53.420Z) -> datetime.date."""
     if not iso:
@@ -666,6 +855,19 @@ def main():
                          "future orphans).")
     ap.add_argument("--apply", action="store_true",
                     help="Delete the orphans (without this, the tool is a dry run).")
+    ap.add_argument("--min-snapshot-age-days", type=int, default=14, metavar="DAYS",
+                    help="SAFETY: never treat a snapshot younger than this as an orphan "
+                         "(default 14). A snapshot created minutes or days ago is far more "
+                         "likely to be an ILM searchable_snapshot action still in flight "
+                         "than a real leftover. Set 0 to disable (not recommended).")
+    ap.add_argument("--allow-ilm-in-flight", action="store_true",
+                    help="SAFETY OVERRIDE: proceed with --apply even when ILM is currently "
+                         "running the searchable_snapshot action on an index whose snapshot "
+                         "is in the candidate list.")
+    ap.add_argument("--skip-recheck", action="store_true",
+                    help="SAFETY OVERRIDE: skip re-reading the in-use set immediately before "
+                         "deleting. The re-check closes the window between the scan and the "
+                         "delete; only skip it if the re-read itself is failing.")
     ap.add_argument("--batch", type=int, default=50,
                     help="Max snapshots per request (also bounded by URL length).")
     ap.add_argument("--timeout", type=int, default=120,
@@ -726,8 +928,24 @@ def main():
     mode = "APPLY (delete)" if args.apply else "DRY-RUN"
     sys.stderr.write(f"Repo    : {args.repo}\nPattern : {args.pattern}\nMode    : {mode}\n")
     sys.stderr.write("Collecting in-use snapshots from mounted indices...\n")
-    in_use = collect_in_use(es, args.repo)
-    sys.stderr.write(f"  in-use snapshots: {len(in_use)}\n")
+    in_use, in_use_info = collect_in_use(es, args.repo)
+    sys.stderr.write(f"  in-use snapshots: {len(in_use)}  "
+                     f"(settings: {in_use_info['settings_indices']} mounted indices"
+                     + (f", cluster state: {in_use_info['cluster_state_indices']}"
+                        if in_use_info["cluster_state_available"] else ", cluster state: UNAVAILABLE")
+                     + ")\n")
+    if not in_use_info["cluster_state_available"]:
+        sys.stderr.write("  WARNING: could not read the cluster state to cross-check the in-use\n"
+                         "           set (needs the 'monitor' cluster privilege). Proceeding on\n"
+                         "           the Get Settings result alone.\n")
+    if in_use_info["only_in_cluster_state"]:
+        # Should never happen now that expand_wildcards=all is used; if it does, the
+        # settings query is under-resolving again and deleting would destroy live data.
+        sys.stderr.write(f"  WARNING: {len(in_use_info['only_in_cluster_state'])} mounted index/indices "
+                         "were visible ONLY in the cluster state:\n")
+        for idx, snap in in_use_info["only_in_cluster_state"][:10]:
+            sys.stderr.write(f"           {idx} -> {snap}\n")
+        sys.stderr.write("           They have been counted as in-use. Investigate before deleting.\n")
 
     sys.stderr.write(f"Listing all snapshots in {args.repo}...\n")
     all_snaps = list_all_snapshots(es, args.repo)
@@ -735,23 +953,80 @@ def main():
 
     # SLM-managed snapshots (metadata.policy set) are retired by SLM's own retention,
     # so they are never orphans -- exclude them from the candidate set.
-    slm_managed = {name for name, slm in all_snaps if slm}
+    by_name = {s["name"]: s for s in all_snaps}
+    slm_managed = {s["name"] for s in all_snaps if s["slm"]}
     if slm_managed:
         sys.stderr.write(f"  SLM-managed (excluded): {len(slm_managed)}\n")
 
-    all_names = sorted({name for name, _ in all_snaps})
+    all_names = sorted(by_name)
     orphans = [s for s in all_names
                if s not in in_use
                and s not in slm_managed
                and fnmatch.fnmatch(s, args.pattern)]
     sys.stderr.write(f"  orphaned (match): {len(orphans)}\n")
 
+    # ---- SAFETY FILTERS -------------------------------------------------------
+    # A frozen index's snapshot IS its data, so a false positive here is destructive
+    # and irreversible. Everything below removes candidates that a point-in-time
+    # "nothing references it" test cannot safely call a leftover.
+
+    # 1. Snapshots that are not SUCCESS are still being written (or failed midway);
+    #    an IN_PROGRESS snapshot is by definition not yet referenced by anything.
+    unfinished = [s for s in orphans if (by_name[s].get("state") or "SUCCESS") != "SUCCESS"]
+    if unfinished:
+        sys.stderr.write(f"  SAFETY: excluding {len(unfinished)} snapshot(s) not in state SUCCESS\n")
+        orphans = [s for s in orphans if s not in set(unfinished)]
+
+    # 2. Young snapshots. ILM creates the snapshot, then mounts it, then deletes the
+    #    source index -- between the first two steps the snapshot has no referencing
+    #    index and is indistinguishable from an orphan.
+    too_young = []
+    if args.min_snapshot_age_days > 0:
+        ages = {s: snapshot_age_days(by_name[s]) for s in orphans}
+        too_young = [s for s in orphans
+                     if ages[s] is None or ages[s] < args.min_snapshot_age_days]
+        if too_young:
+            sys.stderr.write(f"  SAFETY: excluding {len(too_young)} snapshot(s) younger than "
+                             f"{args.min_snapshot_age_days} day(s) (or of unknown age)\n")
+            for s in too_young[:10]:
+                sys.stderr.write(f"          age={ages[s]}d  {s}\n")
+            orphans = [s for s in orphans if s not in set(too_young)]
+
+    # 3. ILM mid-flight on an index whose snapshot is in the candidate list.
+    inflight = ilm_indices_in_flight(es)
+    conflicts = inflight_conflicts(orphans, inflight)
+    if conflicts:
+        sys.stderr.write(f"  SAFETY: {len(conflicts)} candidate(s) match an index ILM is currently "
+                         "running the searchable_snapshot action on:\n")
+        for s in conflicts[:10]:
+            sys.stderr.write(f"          {s}\n")
+        if args.allow_ilm_in_flight:
+            sys.stderr.write("          --allow-ilm-in-flight given; keeping them in the set.\n")
+        else:
+            orphans = [s for s in orphans if s not in set(conflicts)]
+            sys.stderr.write("          Excluded (pass --allow-ilm-in-flight to keep them).\n")
+
+    if unfinished or too_young or conflicts:
+        sys.stderr.write(f"  orphans after safety filters: {len(orphans)}\n")
+
     report = {
         "repo": args.repo,
         "pattern": args.pattern,
         "total_snapshots": len(all_snaps),
         "in_use": len(in_use),
+        "in_use_detection": {
+            "settings_indices": in_use_info["settings_indices"],
+            "cluster_state_available": in_use_info["cluster_state_available"],
+            "cluster_state_indices": in_use_info["cluster_state_indices"],
+            "only_in_cluster_state": [i for i, _ in in_use_info["only_in_cluster_state"]],
+        },
         "slm_managed_excluded": len(slm_managed),
+        "safety_excluded": {
+            "not_success": unfinished,
+            "younger_than_days": args.min_snapshot_age_days,
+            "too_young": too_young,
+            "ilm_in_flight": [] if args.allow_ilm_in_flight else conflicts,
+        },
         "orphan_count": len(orphans),
         "applied": bool(args.apply),
     }
@@ -872,8 +1147,51 @@ def main():
 
     # Optional: delete the orphans.
     if args.apply:
-        sys.stderr.write(f"Deleting {len(orphans)} orphan(s) (batch<= {args.batch})...\n")
-        report["deleted"] = delete_snapshots(es, args.repo, orphans, args.batch)
+        # Final guard: re-read the in-use set immediately before deleting. Sizing and
+        # ILM analysis can take a long time on a big repo, and ILM keeps mounting new
+        # searchable snapshots while we work -- a candidate may have become live since
+        # the scan started.
+        if not args.skip_recheck:
+            sys.stderr.write("Re-checking the in-use set immediately before deletion...\n")
+            fresh_in_use, fresh_info = collect_in_use(es, args.repo)
+            became_live = sorted(set(orphans) & fresh_in_use)
+            if became_live:
+                sys.stderr.write(f"  SAFETY: {len(became_live)} candidate(s) are now referenced by a "
+                                 "mounted index and will NOT be deleted:\n")
+                for s in became_live[:10]:
+                    sys.stderr.write(f"          {s}\n")
+                orphans = [s for s in orphans if s not in set(became_live)]
+                report["safety_excluded"]["became_live_before_delete"] = became_live
+            if fresh_info["total"] < in_use_info["total"]:
+                sys.stderr.write(f"  WARNING: the in-use set SHRANK during the run "
+                                 f"({in_use_info['total']} -> {fresh_info['total']}). Indices may be "
+                                 "closing or being deleted concurrently; aborting is safer.\n")
+                sys.exit("ERROR: aborting --apply because the in-use set shrank mid-run. "
+                         "Re-run the scan and review before deleting.")
+
+        if not orphans:
+            sys.stderr.write("Nothing left to delete after the safety re-check.\n")
+            report["deleted"] = 0
+        else:
+            sys.stderr.write(f"Deleting {len(orphans)} orphan(s) (batch<= {args.batch})...\n")
+            report["deleted"] = delete_snapshots(es, args.repo, orphans, args.batch)
+
+        # Post-delete health check. Deleting a snapshot a mounted index needs does not
+        # fail loudly -- Elasticsearch only notices on the next cache miss (shard
+        # relocation, node restart), so the cluster can stay green for weeks and then
+        # go red. This is the earliest signal available; the follow-up check matters.
+        health = es.get_optional("/_cluster/health") or {}
+        status = health.get("status")
+        unassigned = health.get("unassigned_shards")
+        report["post_delete_health"] = {"status": status, "unassigned_shards": unassigned}
+        sys.stderr.write(f"Post-delete cluster health: {status}, "
+                         f"unassigned shards: {unassigned}\n")
+        if status and status != "green":
+            sys.stderr.write("  WARNING: cluster is not green after the delete. Check\n"
+                             "           GET _cluster/allocation/explain for SnapshotMissingException.\n")
+        sys.stderr.write("  NOTE: a broken frozen index may not surface for days or weeks (the\n"
+                         "        failure appears on the first cache miss). Re-check cluster health\n"
+                         "        after the next node restart or shard relocation.\n")
 
     # Optional: write the FULL orphan list + analysis to an audit file.
     if args.audit_file:
@@ -997,6 +1315,46 @@ def write_audit_file(path, args, report, orphans, per):
     w(f"  in-use (mounted)        : {report.get('in_use', '?')}")
     w(f"  SLM-managed (excluded)  : {report.get('slm_managed_excluded', 0)}")
     w(f"  orphaned snapshots      : {report['orphan_count']}")
+    det = report.get("in_use_detection") or {}
+    if det:
+        w("")
+        w("IN-USE DETECTION (how the live snapshots were identified)")
+        w(f"  mounted indices via _settings (expand_wildcards=all) : {det.get('settings_indices', '?')}")
+        if det.get("cluster_state_available"):
+            w(f"  mounted indices via cluster state (cross-check)      : {det.get('cluster_state_indices')}")
+        else:
+            w("  cluster-state cross-check                            : UNAVAILABLE (no privilege)")
+        only = det.get("only_in_cluster_state") or []
+        if only:
+            w(f"  !! {len(only)} index/indices seen ONLY in the cluster state -- the settings")
+            w("     query is under-resolving. These were counted as in-use:")
+            for idx in only[:20]:
+                w(f"       {idx}")
+    sf = report.get("safety_excluded") or {}
+    if sf:
+        held = [("not in state SUCCESS", sf.get("not_success") or []),
+                (f"younger than {sf.get('younger_than_days')} day(s)", sf.get("too_young") or []),
+                ("ILM searchable_snapshot in flight", sf.get("ilm_in_flight") or []),
+                ("became live before delete", sf.get("became_live_before_delete") or [])]
+        held = [(label, names) for label, names in held if names]
+        if held:
+            w("")
+            w("HELD BACK BY SAFETY FILTERS (candidates NOT treated as orphans)")
+            for label, names in held:
+                w(f"  {label}: {len(names)}")
+                for n in names[:25]:
+                    w(f"    {n}")
+                if len(names) > 25:
+                    w(f"    ...and {len(names) - 25} more")
+    if "post_delete_health" in report:
+        h = report["post_delete_health"]
+        w("")
+        w("POST-DELETE CLUSTER HEALTH")
+        w(f"  status           : {h.get('status')}")
+        w(f"  unassigned shards: {h.get('unassigned_shards')}")
+        w("  NOTE: a frozen index whose snapshot was deleted stays green until the first")
+        w("        cache miss (shard relocation / node restart), which can be weeks later.")
+        w("        Re-check health after the next restart before considering this clean.")
     if "total_bytes" in report:
         w(f"  total (logical)         : {report['total_human']}  ({report['total_bytes']} bytes)")
         if "incremental_bytes" in report:
@@ -1030,8 +1388,14 @@ def write_audit_file(path, args, report, orphans, per):
         w("")
 
     w("NOTES")
-    w("  - Orphan = in repo, not referenced by any mounted index, and NOT SLM-managed")
-    w("    (SLM-managed snapshots are retired by SLM's own retention).")
+    w("  - Orphan = in repo, not referenced by any mounted index, NOT SLM-managed, and")
+    w("    past every safety filter (SLM-managed snapshots are retired by SLM's own")
+    w("    retention).")
+    w("  - The in-use set is resolved with expand_wildcards=all: data-stream backing")
+    w("    indices and their searchable-snapshot mounts (partial-.ds-*, restored-.ds-*)")
+    w("    are HIDDEN, and _all/* do not match hidden indices by default. Missing them")
+    w("    turns a live snapshot into a false orphan -- and deleting it destroys the")
+    w("    index, because for a frozen index the snapshot IS the data.")
     w("  - 'total (logical)' sums each snapshot's index sizes and OVERCOUNTS blobs shared")
     w("    between snapshots -- treat it as an upper bound.")
     w("  - 'incremental (reclaim)' (only with --incremental) is the dedup-aware estimate of")
