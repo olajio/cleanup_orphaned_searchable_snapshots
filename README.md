@@ -97,8 +97,22 @@ the same way.
 
 Plus: repositories matched by **UUID as well as name** (one bucket, two registrations); the
 repository listed **before** the in-use read (so a snapshot mounted mid-run can't become a
-candidate); `--apply` blocked while a snapshot or restore is running, when the cluster-state
-cross-check is unavailable, or when the in-use scan returns implausibly empty.
+candidate); **truncated snapshot listings paginated** (ES 8.3+ can cap `_all` and report
+`remaining` — an incomplete list hides snapshots from the scan); `--apply` blocked while a
+snapshot is running, when the cluster-state cross-check is unavailable, when the two sources
+disagree, or when the in-use scan returns implausibly empty.
+
+**Precondition:** the in-use scan sees only *this* cluster. If a repository is shared between
+deployments, an index mounted on the other cluster is invisible here. Elastic Cloud gives each
+deployment its own path in `found-snapshots`, so this is normally safe — confirm it for any
+repository you did not provision.
+
+**Regression tests** (offline, no cluster needed):
+
+```bash
+python3 test_safety_guards.py       # each guard, plus a replay of the July 2026 incident
+python3 test_integration_dryrun.py  # the real main() against a simulated cluster
+```
 
 Everything held back is listed in the `--audit-file` under **HELD BACK BY SAFETY FILTERS**.
 
@@ -132,6 +146,7 @@ Anything it reports will fail on its next shard start. Run it before **and** aft
 | `orphaned_searchable_snapshots.py` | The main tool — find, size, delete orphans, flag culprit ILM policies, and estimate reclaimable storage, against a live cluster. |
 | `find_broken_searchable_snapshots.py` | Read-only check: mounted indices whose backing snapshot is **missing** — i.e. already broken, red or not yet. |
 | `INCIDENT_why_live_snapshots_were_deleted.md` | Shareable write-up of the July 2026 incident: why live snapshots were mistaken for orphans, and every fix made. |
+| `test_safety_guards.py`, `test_integration_dryrun.py` | Offline regression tests for the safety guards (no cluster required). |
 | `HOWTO_orphaned_searchable_snapshots.md` | Detailed usage guide (options, recipes, troubleshooting). |
 | `analyze_ilm.py` | Offline auditor — parses exported `GET _ilm/policy` JSON files and flags leaking policies. |
 | `corrected_ilm_policies/` | Ready-to-apply `PUT _ilm/policy` bodies that add a delete phase to the leaking policies. |

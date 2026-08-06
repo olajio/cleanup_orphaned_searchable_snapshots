@@ -163,6 +163,7 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SECRET_PREFIX = "elastic/kibana/dataview_cleanup_"
@@ -513,19 +514,48 @@ def list_all_snapshots(es, repo):
 
     `state` and `start_ms` drive the safety guards: a snapshot that is not SUCCESS
     is still being written, and a very young snapshot may be an ILM mount in flight.
+
+    PAGINATION: Elasticsearch 8.3+ may TRUNCATE this response and report how many
+    snapshots it withheld in `remaining`. A truncated listing is dangerous in both
+    directions -- it hides snapshots from the orphan scan, and it makes a live
+    snapshot look absent to the broken-index check -- so when the server reports
+    more to come, the rest is fetched with the size/after cursor. Older versions
+    that do not support those parameters never set `remaining`, so they never take
+    the paginated path.
     """
-    data = es.get(f"/_snapshot/{repo}/_all?ignore_unavailable=true")
     out = []
-    for snap in data.get("snapshots", []):
-        name = snap.get("snapshot")
-        if not name:
-            continue
-        out.append({
-            "name": name,
-            "slm": (snap.get("metadata") or {}).get("policy"),
-            "state": snap.get("state"),
-            "start_ms": snap.get("start_time_in_millis"),
-        })
+    seen = set()
+
+    def absorb(data):
+        for snap in data.get("snapshots", []):
+            name = snap.get("snapshot")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append({
+                "name": name,
+                "slm": (snap.get("metadata") or {}).get("policy"),
+                "state": snap.get("state"),
+                "start_ms": snap.get("start_time_in_millis"),
+            })
+
+    data = es.get(f"/_snapshot/{repo}/_all?ignore_unavailable=true")
+    absorb(data)
+    remaining = data.get("remaining")
+    if remaining:
+        sys.stderr.write(f"  (response truncated: {remaining} more snapshot(s); paginating)\n")
+        after = data.get("next")
+        guard = 0
+        while after and guard < 1000:
+            guard += 1
+            page = es.get(f"/_snapshot/{repo}/_all?ignore_unavailable=true"
+                          f"&size=1000&sort=start_time&after={urllib.parse.quote(after)}")
+            before = len(out)
+            absorb(page)
+            after = page.get("next")
+            if len(out) == before:
+                break  # no progress -- stop rather than loop forever
+        sys.stderr.write(f"  (paginated total: {len(out)} snapshot(s))\n")
     return out
 
 
@@ -747,7 +777,8 @@ def snapshot_age_days(entry, today=None):
     start_ms = entry.get("start_ms")
     if start_ms:
         try:
-            d = datetime.datetime.utcfromtimestamp(start_ms / 1000.0).date()
+            d = datetime.datetime.fromtimestamp(
+                start_ms / 1000.0, datetime.timezone.utc).date()
             return (today - d).days
         except (OverflowError, OSError, ValueError):
             pass
@@ -911,6 +942,10 @@ def main():
                     help="SAFETY OVERRIDE: proceed with --apply even when ILM is currently "
                          "running the searchable_snapshot action on an index whose snapshot "
                          "is in the candidate list.")
+    ap.add_argument("--allow-empty-in-use", action="store_true",
+                    help="SAFETY OVERRIDE: proceed with --apply even when the in-use scan "
+                         "found zero mounted searchable-snapshot indices. Only use this when "
+                         "you have confirmed the cluster genuinely has none.")
     ap.add_argument("--skip-recheck", action="store_true",
                     help="SAFETY OVERRIDE: skip re-reading the in-use set immediately before "
                          "deleting. The re-check closes the window between the scan and the "
@@ -1061,22 +1096,32 @@ def main():
             orphans = [s for s in orphans if s not in set(conflicts)]
             sys.stderr.write("          Excluded (pass --allow-ilm-in-flight to keep them).\n")
 
-    # 4. Plausibility guard. If the in-use scan came back empty (or near-empty) while the
-    #    repository is full of ILM-style searchable snapshots, the scan is far more likely
-    #    to be broken than the cluster to be genuinely unmounted. That is precisely the
-    #    shape of the hidden-index bug, so refuse to delete on it.
-    implausible = (not in_use) and len(orphans) > 0
-    if implausible:
+    # 4. Plausibility guard. If the in-use scan came back empty while the repository is
+    #    full of ILM-style searchable snapshots, the scan is far more likely to be broken
+    #    than the cluster to be genuinely unmounted -- that is the shape of the
+    #    hidden-index bug. It IS legitimate on a cluster whose frozen indices were all
+    #    deleted, so --allow-empty-in-use exists for that case.
+    implausible = (not in_use) and len(orphans) > 0 and not args.allow_empty_in_use
+    if (not in_use) and orphans:
         sys.stderr.write("  SAFETY: the in-use scan found ZERO mounted searchable-snapshot indices\n"
                          f"          while {len(orphans)} candidate orphan(s) exist. That usually means the\n"
                          "          scan is failing, not that nothing is mounted.\n")
+        if args.allow_empty_in_use:
+            sys.stderr.write("          --allow-empty-in-use given; continuing.\n")
 
-    # 5. Concurrent repository activity. A running snapshot or an in-flight restore
-    #    references blobs that no mounted index points at yet.
+    # 5. Concurrent repository activity.
+    #    A running SNAPSHOT is a concurrent write to the repository -- deleting under it
+    #    can fail or interfere, so it blocks --apply.
+    #    Shards recovering FROM a snapshot are only reported: on a cluster doing ILM
+    #    frozen mounts this is routinely non-zero, and a correctly-identified orphan is
+    #    by definition not the snapshot any recovering shard is reading.
     running_snaps, running_restores = in_progress_repo_operations(es, args.repo)
-    if running_snaps or running_restores:
-        sys.stderr.write(f"  SAFETY: repository activity in progress -- {running_snaps} snapshot(s) "
-                         f"running, {running_restores} shard(s) recovering from snapshot.\n")
+    if running_snaps:
+        sys.stderr.write(f"  SAFETY: {running_snaps} snapshot(s) currently running against "
+                         f"{args.repo} -- this blocks --apply.\n")
+    if running_restores:
+        sys.stderr.write(f"  NOTE: {running_restores} shard(s) recovering from snapshot "
+                         "(normal during ILM frozen mounts; not a blocker).\n")
     report_activity = {"snapshots_running": running_snaps, "restores_running": running_restores}
 
     if unfinished or too_young or conflicts:
@@ -1227,7 +1272,8 @@ def main():
             sys.exit("ERROR: refusing to delete -- the in-use scan found zero mounted "
                      "searchable-snapshot indices. Verify with\n"
                      "  GET _cluster/state/metadata?filter_path=metadata.indices.*.settings.index.store.snapshot\n"
-                     "before re-running.")
+                     "If the cluster genuinely has no mounted searchable snapshots, re-run "
+                     "with --allow-empty-in-use.")
         if not in_use_info["cluster_state_available"]:
             sys.exit("ERROR: refusing to delete -- the cluster-state cross-check is unavailable, "
                      "so the in-use set cannot be independently verified. Grant the API key the "
@@ -1235,10 +1281,9 @@ def main():
         if in_use_info["only_in_cluster_state"]:
             sys.exit("ERROR: refusing to delete -- indices were visible only in the cluster state, "
                      "meaning the settings query is under-resolving. Investigate before deleting.")
-        if running_snaps or running_restores:
-            sys.exit(f"ERROR: refusing to delete -- repository activity in progress "
-                     f"({running_snaps} snapshot(s), {running_restores} restore shard(s)). "
-                     "Wait for it to finish and re-run.")
+        if running_snaps:
+            sys.exit(f"ERROR: refusing to delete -- {running_snaps} snapshot(s) currently "
+                     f"running against {args.repo}. Wait for them to finish and re-run.")
 
         # Final guard: re-read the in-use set immediately before deleting. Sizing and
         # ILM analysis can take a long time on a big repo, and ILM keeps mounting new

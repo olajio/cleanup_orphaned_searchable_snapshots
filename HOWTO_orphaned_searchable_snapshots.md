@@ -192,6 +192,7 @@ at the cost of the slower `_status` scan.
 | `--apply` | off | **Delete** the orphans (without it, dry-run) |
 | `--min-snapshot-age-days N` | `14` | **Safety.** Never treat a snapshot younger than this as an orphan. `0` disables (not recommended) — see [§8](#8-performance--safety-notes) |
 | `--allow-ilm-in-flight` | off | **Safety override.** Delete even when ILM is mid-`searchable_snapshot` on an index whose snapshot is a candidate |
+| `--allow-empty-in-use` | off | **Safety override.** Allow `--apply` when the in-use scan found **zero** mounted indices (legitimate only if the cluster genuinely has none) |
 | `--skip-recheck` | off | **Safety override.** Skip re-reading the in-use set immediately before deleting |
 | `--batch N` | `50` | Max snapshots per request (also bounded by URL length) |
 | `--timeout N` | `120` | Per-request read timeout in seconds |
@@ -430,8 +431,40 @@ went red two weeks later and the data was unrecoverable.
 7. **Post-delete health check** — cluster health is reported afterwards, with a reminder
    that breakage may not surface until the next restart.
 
+Additional hardening:
+
+- **Repository matched by UUID as well as name** — one bucket can carry two repository
+  registrations; a mount recorded against the other name points at the same blobs.
+- **Repository listed *before* the in-use read** — in the opposite order a snapshot created
+  *and* mounted between the two calls is a false orphan by construction.
+- **Truncated snapshot listings are paginated** — ES 8.3+ can cap `GET _snapshot/<repo>/_all`
+  and report `remaining`. An incomplete listing would hide snapshots from the scan and make
+  live ones look absent, so the cursor is followed to the end.
+- **`--apply` is blocked** when a snapshot is running against the repository, when the
+  cluster-state cross-check is unavailable, when the two sources disagree, or when the in-use
+  scan returns zero mounts (override: `--allow-empty-in-use`).
+- **Shards recovering from snapshot are reported, not blocked** — that is routine during ILM
+  frozen mounts, and a correctly-identified orphan is by definition not what they are reading.
+
 Every held-back snapshot is listed in the `--audit-file` under **HELD BACK BY SAFETY
 FILTERS**, so nothing is silently dropped.
+
+### Precondition: one cluster per repository
+
+The in-use scan can only see **this** cluster. If a snapshot repository is shared between
+deployments, an index mounted on the *other* cluster is invisible here and its snapshot would
+be classified as an orphan. Elastic Cloud gives each deployment its own path inside
+`found-snapshots`, so this is normally safe — **confirm it before running against a repository
+you did not provision.**
+
+### Regression tests
+
+Both test suites are offline and need no cluster:
+
+```bash
+python3 test_safety_guards.py       # unit-level: each guard, plus a replay of the incident
+python3 test_integration_dryrun.py  # runs the real main() against a simulated cluster
+```
 
 > **After any `--apply`,** re-check `GET _cluster/health` following the next node restart or
 > shard relocation. Green immediately after the delete does **not** prove the delete was safe.
